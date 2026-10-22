@@ -1,0 +1,223 @@
+import SwiftUI
+import AppKit
+import PDFKit
+import UniformTypeIdentifiers
+import RefCheckerCore
+
+enum SettingsKey {
+    static let contactEmail = "contactEmail"
+    static let useCrossref = "useCrossref"
+    static let useDBLP = "useDBLP"
+    static let useOpenAlex = "useOpenAlex"
+    static let useAISeL = "useAISeL"
+    static let requireDOI = "requireDOI"
+    static let checkVolumeIssuePages = "checkVolumeIssuePages"
+    static let parallelRequests = "parallelRequests"
+}
+
+@MainActor
+final class AppModel: ObservableObject {
+    @Published var sourceName: String?
+    @Published var sectionText = ""
+    @Published var references: [ParsedReference] = []
+    @Published var results: [Int: ReferenceResult] = [:]
+    @Published var inProgress: Set<Int> = []
+    @Published var isChecking = false
+    @Published var notice: String?
+    @Published var removedLines: [String] = []
+    @Published var errorMessage: String?
+
+    private var checkTask: Task<Void, Never>?
+    private var currentRun: UUID?
+
+    // MARK: Loading
+
+    func showOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf, .plainText, .text, UTType(filenameExtension: "md") ?? .text]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a paper (PDF) or a text file containing its reference list"
+        if panel.runModal() == .OK, let url = panel.url { open(url) }
+    }
+
+    func open(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let extracted = try PaperText.extract(from: url)
+            let text = extracted.text
+            removedLines = extracted.removed
+            sourceName = url.lastPathComponent
+            if let section = ReferenceSectionExtractor.extract(from: text) {
+                sectionText = section
+                notice = nil
+            } else {
+                sectionText = text
+                notice = "No “References” heading was found, so the whole text is shown. Delete everything except the reference list and choose “Split into References”."
+            }
+            parseSection()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func parseSection() {
+        cancel()
+        references = ReferenceParser.parse(section: sectionText)
+        results = [:]
+    }
+
+    // MARK: Checking
+
+    func checkAll() { check(references) }
+
+    func check(_ refs: [ParsedReference]) {
+        guard !refs.isEmpty else { return }
+        cancel()
+        for r in refs { results[r.id] = nil }
+        let checker = ReferenceChecker(configuration: Self.configuration())
+        let parallel = max(1, min(8, UserDefaults.standard.object(forKey: SettingsKey.parallelRequests) as? Int ?? 3))
+        isChecking = true
+        let run = UUID()
+        currentRun = run
+        checkTask = Task { [weak self] in
+            await withTaskGroup(of: ReferenceResult.self) { group in
+                var pending = refs[...]
+                for _ in 0..<parallel {
+                    guard let ref = pending.popFirst() else { break }
+                    self?.inProgress.insert(ref.id)
+                    group.addTask { await checker.check(ref) }
+                }
+                while let result = await group.next() {
+                    guard let self, self.currentRun == run, !Task.isCancelled else {
+                        group.cancelAll()
+                        break
+                    }
+                    self.inProgress.remove(result.id)
+                    self.results[result.id] = result
+                    if let ref = pending.popFirst() {
+                        self.inProgress.insert(ref.id)
+                        group.addTask { await checker.check(ref) }
+                    }
+                }
+            }
+            guard let self, self.currentRun == run else { return }
+            self.isChecking = false
+            self.inProgress = []
+        }
+    }
+
+    func cancel() {
+        checkTask?.cancel()
+        checkTask = nil
+        currentRun = nil
+        isChecking = false
+        inProgress = []
+    }
+
+    static func configuration() -> CheckerConfiguration {
+        let d = UserDefaults.standard
+        func flag(_ key: String) -> Bool { d.object(forKey: key) as? Bool ?? true }
+        return CheckerConfiguration(
+            contactEmail: d.string(forKey: SettingsKey.contactEmail),
+            useCrossref: flag(SettingsKey.useCrossref),
+            useDBLP: flag(SettingsKey.useDBLP),
+            useOpenAlex: flag(SettingsKey.useOpenAlex),
+            useAISeL: flag(SettingsKey.useAISeL),
+            options: ComparisonOptions(requireDOI: flag(SettingsKey.requireDOI),
+                                       checkVolumeIssuePages: flag(SettingsKey.checkVolumeIssuePages)))
+    }
+
+    // MARK: Summary
+
+    var verifiedCount: Int { results.values.filter { $0.verdict == .verified }.count }
+    var needsReviewCount: Int {
+        results.values.filter { if case .needsReview = $0.verdict { return true }; return false }.count
+    }
+    var issueCount: Int { results.values.filter { if case .issues = $0.verdict { return true }; return false }.count }
+    var notFoundCount: Int {
+        results.values.filter {
+            switch $0.verdict {
+            case .notFound, .failed: return true
+            default: return false
+            }
+        }.count
+    }
+
+    // MARK: Output
+
+    func reportHTML() -> String {
+        HTMLReport.render(references: references, results: results, source: sourceName)
+    }
+
+    func exportHTML() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.html]
+        let base = sourceName.map { ($0 as NSString).deletingPathExtension } ?? "references"
+        panel.nameFieldStringValue = "\(base) – reference check.html"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try reportHTML().write(to: url, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func printReport() {
+        ReportPrinter.shared.print(html: reportHTML())
+    }
+}
+
+enum PaperText {
+    enum Failure: LocalizedError {
+        case unreadablePDF, noText
+
+        var errorDescription: String? {
+            switch self {
+            case .unreadablePDF: return "The PDF could not be opened."
+            case .noText: return "The PDF contains no text layer (scanned document?). Run OCR first or paste the references manually."
+            }
+        }
+    }
+
+    struct Extracted {
+        var text: String
+        /// Running headers, footers and page numbers that were dropped.
+        var removed: [String] = []
+    }
+
+    static func extract(from url: URL) throws -> Extracted {
+        if url.pathExtension.lowercased() == "pdf" {
+            guard let document = PDFDocument(url: url) else { throw Failure.unreadablePDF }
+            let pages = (0..<document.pageCount).compactMap { document.page(at: $0) }.map(lines(of:))
+            let cleaned = PageCleaner.clean(pages: pages)
+            guard !cleaned.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw Failure.noText }
+            return Extracted(text: cleaned.text, removed: cleaned.removed)
+        }
+        if let text = try? String(contentsOf: url, encoding: .utf8) { return Extracted(text: text) }
+        return Extracted(text: try String(contentsOf: url, encoding: .isoLatin1))
+    }
+
+    /// The visual lines of a page with their vertical position. Falls back to the
+    /// plain page text (without positions) if line geometry is unavailable or incomplete.
+    static func lines(of page: PDFPage) -> [PageLine] {
+        let plain = page.string ?? ""
+        let fallback = plain.components(separatedBy: .newlines).map { PageLine(text: $0) }
+        let box = page.bounds(for: .cropBox)
+        guard page.rotation % 180 == 0, box.height > 0, let selection = page.selection(for: box) else { return fallback }
+
+        let lines = selection.selectionsByLine().compactMap { line -> PageLine? in
+            guard let text = line.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            let b = line.bounds(for: page)
+            var top = (box.maxY - b.maxY) / box.height
+            var bottom = (box.maxY - b.minY) / box.height
+            if page.rotation == 180 { (top, bottom) = (1 - bottom, 1 - top) }
+            return PageLine(text: text, top: Double(top), bottom: Double(bottom))
+        }
+        // Line selections occasionally miss text that page.string has; then trust page.string.
+        let lineChars = lines.reduce(0) { $0 + $1.text.filter { !$0.isWhitespace }.count }
+        let plainChars = plain.filter { !$0.isWhitespace }.count
+        return lineChars >= plainChars * 9 / 10 ? lines : fallback
+    }
+}

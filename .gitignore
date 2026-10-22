@@ -1,0 +1,61 @@
+# ---- Swift Package Manager ----
+.build/
+.swiftpm/
+/Packages/
+# Package.resolved is kept on purpose: it pins dependency versions for the app.
+
+# ---- App bundle produced by build-app.sh ----
+build/
+*.app/
+*.dSYM/
+*.dSYM.zip
+
+# ---- Xcode ----
+# The package is opened via Package.swift; generated projects/workspaces are not tracked.
+*.xcodeproj/
+*.xcworkspace/
+!*.xcworkspace/contents.xcworkspacedata
+xcuserdata/
+DerivedData/
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+*.xcscmblueprint
+*.hmap
+*.ipa
+*.xcresult/
+timeline.xctimeline
+playground.xcworkspace
+
+# ---- Distribution artefacts ----
+*.zip
+*.dmg
+*.pkg
+*.xcarchive/
+
+# ---- Exported reports and test papers ----
+# Reports exported from the app and papers used for testing (may be copyrighted).
+*- reference check.html
+/papers/
+/samples/private/
+
+# ---- macOS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.DocumentRevisions-V100
+.TemporaryItems
+.VolumeIcon.icns
+
+# ---- Editors / tools ----
+.vscode/
+.idea/
+*.swp
+*~
+.sourcekit-lsp/
+.claude/settings.local.json
