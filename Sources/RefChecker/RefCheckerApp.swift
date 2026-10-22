@@ -25,6 +25,14 @@ struct RefCheckerApp: App {
                     .keyboardShortcut("p")
                     .disabled(model.results.isEmpty)
             }
+            CommandGroup(after: .sidebar) {
+                Button(model.showBrowser ? "Hide Browser" : "Show Browser") { model.showBrowser.toggle() }
+                    .keyboardShortcut("b", modifiers: [.command, .shift])
+            }
+            CommandGroup(after: .textEditing) {
+                Button("Find in Reference List…") { model.textController.showFindBar() }
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+            }
             CommandMenu("References") {
                 Button("Split into References") { model.parseSection() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])

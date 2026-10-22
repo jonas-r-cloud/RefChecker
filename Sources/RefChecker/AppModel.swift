@@ -26,6 +26,15 @@ final class AppModel: ObservableObject {
     @Published var notice: String?
     @Published var removedLines: [String] = []
     @Published var errorMessage: String?
+    @Published var showBrowser = false
+    /// The reference whose website is shown in the browser pane.
+    @Published var browserReferenceID: Int?
+
+    /// Manually resolved references, by `Resolution.key(for:)`; persisted in the user defaults.
+    @Published private(set) var resolutions: [String: Resolution] = AppModel.loadResolutions()
+
+    let browser = BrowserModel()
+    let textController = SectionTextController()
 
     private var checkTask: Task<Void, Never>?
     private var currentRun: UUID?
@@ -128,26 +137,97 @@ final class AppModel: ObservableObject {
                                        checkVolumeIssuePages: flag(SettingsKey.checkVolumeIssuePages)))
     }
 
+    // MARK: Browser & navigation
+
+    /// The website of a reference's record: DOI landing page, else the provider's landing page.
+    /// Unresolved references get a Google Scholar search instead.
+    func webURL(for reference: ParsedReference) -> URL {
+        if let meta = results[reference.id]?.metadata {
+            let candidates: [String?] = [meta.doi.map { "https://doi.org/\($0)" }] + meta.links.map { Optional($0) } + [meta.url]
+            if let url = candidates.compactMap({ $0 }).compactMap({ URL(string: $0) })
+                .first(where: { $0.scheme == "https" || $0.scheme == "http" }) {
+                return url
+            }
+        }
+        if let doi = reference.doi, let url = URL(string: "https://doi.org/\(doi)") { return url }
+        return BrowserModel.scholarSearch(reference.title ?? reference.raw)
+    }
+
+    func showInBrowser(_ reference: ParsedReference) {
+        showBrowser = true
+        browserReferenceID = reference.id
+        browser.load(webURL(for: reference))
+    }
+
+    func revealInList(_ reference: ParsedReference) {
+        textController.reveal(reference)
+    }
+
     // MARK: Summary
 
-    var verifiedCount: Int { results.values.filter { $0.verdict == .verified }.count }
-    var needsReviewCount: Int {
-        results.values.filter { if case .needsReview = $0.verdict { return true }; return false }.count
+    private var effectiveVerdicts: [Verdict] { references.compactMap(effectiveVerdict) }
+
+    var verifiedCount: Int { effectiveVerdicts.filter { $0 == .verified }.count }
+    var resolvedCount: Int {
+        references.filter { resolution(for: $0) != nil && results[$0.id].map { $0.verdict != .verified } == true }.count
     }
-    var issueCount: Int { results.values.filter { if case .issues = $0.verdict { return true }; return false }.count }
+    var needsReviewCount: Int {
+        effectiveVerdicts.filter { if case .needsReview = $0 { return true }; return false }.count
+    }
+    var issueCount: Int { effectiveVerdicts.filter { if case .issues = $0 { return true }; return false }.count }
     var notFoundCount: Int {
-        results.values.filter {
-            switch $0.verdict {
+        effectiveVerdicts.filter {
+            switch $0 {
             case .notFound, .failed: return true
             default: return false
             }
         }.count
     }
 
+    // MARK: Manual resolution
+
+    func resolution(for reference: ParsedReference) -> Resolution? {
+        resolutions[Resolution.key(for: reference)]
+    }
+
+    /// The verdict as shown: a resolved reference counts as verified.
+    func effectiveVerdict(_ reference: ParsedReference) -> Verdict? {
+        guard let verdict = results[reference.id]?.verdict else { return nil }
+        return resolution(for: reference) != nil ? .verified : verdict
+    }
+
+    func resolve(_ reference: ParsedReference, note: String) {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        resolutions[Resolution.key(for: reference)] = Resolution(note: trimmed.isEmpty ? nil : trimmed)
+        saveResolutions()
+    }
+
+    func unresolve(_ reference: ParsedReference) {
+        resolutions[Resolution.key(for: reference)] = nil
+        saveResolutions()
+    }
+
+    private static let resolutionsKey = "resolutions"
+
+    private static func loadResolutions() -> [String: Resolution] {
+        guard let data = UserDefaults.standard.data(forKey: resolutionsKey),
+              let stored = try? JSONDecoder().decode([String: Resolution].self, from: data) else { return [:] }
+        return stored
+    }
+
+    private func saveResolutions() {
+        if let data = try? JSONEncoder().encode(resolutions) {
+            UserDefaults.standard.set(data, forKey: Self.resolutionsKey)
+        }
+    }
+
     // MARK: Output
 
     func reportHTML() -> String {
-        HTMLReport.render(references: references, results: results, source: sourceName)
+        let resolved = Dictionary(uniqueKeysWithValues: references.compactMap { ref in
+            resolution(for: ref).map { (ref.id, $0) }
+        })
+        return HTMLReport.render(references: references, results: results, source: sourceName, resolutions: resolved)
     }
 
     func exportHTML() {

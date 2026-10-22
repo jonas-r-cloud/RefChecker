@@ -198,3 +198,24 @@ final class NumberPlacementTests: XCTestCase {
         XCTAssertEqual(fields["Title"], .match)
     }
 }
+
+final class ResolutionTests: XCTestCase {
+    func testResolvedReferenceCountsAsVerifiedButKeepsFieldColours() {
+        let ref = ReferenceParser.parse("Smith, J. (2019). Learning to rank citations. Journal of Testing.", label: "1", id: 0)
+        let field = FieldComparison(field: "Year", original: "2019", retrieved: "2020", status: .mismatch)
+        let result = ReferenceResult(reference: ref, metadata: nil, fields: [field], highlights: [],
+                                     verdict: .issues(1), notes: [])
+        let html = HTMLReport.render(references: [ref], results: [0: result], source: "paper.pdf",
+                                     resolutions: [0: Resolution(note: "Online-first year")])
+        XCTAssertTrue(html.contains("1 verified (1 resolved manually)"))
+        XCTAssertTrue(html.contains("Resolved manually (was: 1 issue)"))
+        XCTAssertTrue(html.contains("Online-first year"))
+        XCTAssertTrue(html.contains("<td class=\"bad\">2019</td>"), "field colours must stay as computed")
+    }
+
+    func testResolutionKeyIgnoresLineBreaksAndPunctuation() {
+        let a = ReferenceParser.parse("Smith, J. (2019). Learning to rank.", label: "1", id: 0)
+        let b = ReferenceParser.parse("Smith, J. (2019).  Learning to\nrank", label: "4", id: 3)
+        XCTAssertEqual(Resolution.key(for: a), Resolution.key(for: b))
+    }
+}

@@ -3,9 +3,12 @@ import Foundation
 /// Printable side-by-side report.
 public enum HTMLReport {
     public static func render(references: [ParsedReference], results: [Int: ReferenceResult],
-                              source: String?, date: Date = Date()) -> String {
+                              source: String?, resolutions: [Int: Resolution] = [:], date: Date = Date()) -> String {
         let checked = references.compactMap { results[$0.id] }
-        func count(_ test: (Verdict) -> Bool) -> Int { checked.filter { test($0.verdict) }.count }
+        // A reference resolved by the user counts as verified.
+        func effective(_ r: ReferenceResult) -> Verdict { resolutions[r.id] != nil ? .verified : r.verdict }
+        func count(_ test: (Verdict) -> Bool) -> Int { checked.filter { test(effective($0)) }.count }
+        let resolvedCount = checked.filter { resolutions[$0.id] != nil && $0.verdict != .verified }.count
         let verified = count { $0 == .verified }
         let review = count { if case .needsReview = $0 { return true }; return false }
         let withIssues = count { if case .issues = $0 { return true }; return false }
@@ -47,7 +50,7 @@ public enum HTMLReport {
         </style></head><body>
         <h1>Reference check</h1>
         <div class="meta">\(escape(source ?? "")) · \(escape(formatter.string(from: date))) · \(references.count) references</div>
-        <div class="summary"><span class="ok">\(verified) verified</span><span class="warn">\(review) to review</span><span class="bad">\(withIssues) with issues</span><span class="bad">\(notFound) not found</span><span class="na">\(references.count - checked.count) not checked</span></div>
+        <div class="summary"><span class="ok">\(verified) verified\(resolvedCount > 0 ? " (\(resolvedCount) resolved manually)" : "")</span><span class="warn">\(review) to review</span><span class="bad">\(withIssues) with issues</span><span class="bad">\(notFound) not found</span><span class="na">\(references.count - checked.count) not checked</span></div>
         <div class="legend">
         <span class="ok">&nbsp;Green&nbsp;</span> <b>Confirmed.</b> A field is green only if
         <ol>
@@ -58,6 +61,7 @@ public enum HTMLReport {
         <span class="warn">&nbsp;Amber&nbsp;</span> Matches, but one of these conditions is not met – check manually.
         <span class="bad">&nbsp;Red&nbsp;</span> Different from, or missing compared with, the record.
         <span class="na">&nbsp;Grey&nbsp;</span> No source has the field.
+        <b>Resolved</b> references were accepted manually by the user despite the findings. They count as verified, but their table keeps the automatic colours.
         The evidence column lists what every source says (✓ agrees with the reference, ✗ differs, – no value).
         </div>
 
@@ -65,7 +69,11 @@ public enum HTMLReport {
 
         for ref in references {
             let result = results[ref.id]
+            let resolution = result.flatMap { $0.verdict != .verified ? resolutions[ref.id] : nil }
             let (cls, badge, badgeClass): (String, String, String) = {
+                if let result, resolution != nil {
+                    return ("verified", "Resolved manually (was: \(result.verdict.title))", "ok")
+                }
                 switch result?.verdict {
                 case .verified?: return ("verified", "Verified", "ok")
                 case .needsReview(let n)?: return ("review", n == 1 ? "1 field unconfirmed" : "\(n) fields unconfirmed", "warn")
@@ -89,6 +97,12 @@ public enum HTMLReport {
             html += "</div><div><div class=\"cap\">Retrieved metadata</div>"
             html += result?.metadata.map { escape($0.formattedCitation) } ?? "<i>–</i>"
             html += "</div></div>"
+            if let resolution {
+                let when = DateFormatter.localizedString(from: resolution.date, dateStyle: .medium, timeStyle: .short)
+                html += "<div class=\"ident\"><b>Resolved by the user on \(escape(when))</b>"
+                if let note = resolution.note { html += " – \(escape(note))" }
+                html += ". The table shows the automatic result.</div>"
+            }
             if let result, result.metadata != nil {
                 html += "<div class=\"ident\">"
                 if let id = result.identification {

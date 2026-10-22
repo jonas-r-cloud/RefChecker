@@ -303,6 +303,24 @@ public struct ReferenceResult: Identifiable, Sendable {
     }
 }
 
+/// The user's decision that a reference is fine despite the automatic findings.
+/// It changes only the verdict; the field colours and evidence stay as computed.
+public struct Resolution: Codable, Hashable, Sendable {
+    public var date: Date
+    public var note: String?
+
+    public init(date: Date = Date(), note: String? = nil) {
+        self.date = date
+        self.note = note
+    }
+
+    /// Resolutions are stored by the reference text (normalised), so they survive
+    /// re-checking, re-splitting and reopening the paper.
+    public static func key(for reference: ParsedReference) -> String {
+        NormalizedText.key(reference.raw)
+    }
+}
+
 public struct ComparisonOptions: Hashable, Sendable {
     /// Report a missing DOI as an issue.
     public var requireDOI: Bool

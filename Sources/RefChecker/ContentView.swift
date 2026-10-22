@@ -20,7 +20,11 @@ struct ContentView: View {
             InputPane()
                 .frame(minWidth: 280, idealWidth: 360, maxWidth: 600)
             ReportView()
-                .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: model.showBrowser ? 520 : 640, maxWidth: .infinity, maxHeight: .infinity)
+            if model.showBrowser {
+                BrowserPane(browser: model.browser)
+                    .frame(minWidth: 380, idealWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -45,6 +49,9 @@ struct ContentView: View {
                 Button { model.printReport() } label: { Label("Print", systemImage: "printer") }
                     .disabled(model.results.isEmpty)
                     .help("Print the side-by-side report (or save it as PDF)")
+
+                Toggle(isOn: $model.showBrowser) { Label("Browser", systemImage: "sidebar.right") }
+                    .help("Show or hide the browser pane (⇧⌘B)")
             }
         }
         .navigationTitle(model.sourceName ?? "RefChecker")
@@ -92,8 +99,8 @@ struct InputPane: View {
                 }
                 .font(.caption)
             }
-            TextEditor(text: $model.sectionText)
-                .font(.system(size: 11, design: .monospaced))
+            SectionSearchBar(controller: model.textController)
+            SectionTextView(text: $model.sectionText, controller: model.textController)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
             HStack {
                 Button("Split into References") { model.parseSection() }
@@ -152,9 +159,9 @@ struct ReportView: View {
     private var visibleReferences: [ParsedReference] {
         switch filter {
         case .all: return model.references
-        case .verified: return model.references.filter { model.results[$0.id]?.verdict == .verified }
+        case .verified: return model.references.filter { model.effectiveVerdict($0) == .verified }
         case .problems: return model.references.filter {
-            guard let v = model.results[$0.id]?.verdict else { return false }
+            guard let v = model.effectiveVerdict($0) else { return false }
             return v != .verified
         }
         }
@@ -167,7 +174,8 @@ struct SummaryBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Pill(text: "\(model.verifiedCount) verified", color: MatchStatus.match.color)
+            Pill(text: "\(model.verifiedCount) verified" + (model.resolvedCount > 0 ? " (\(model.resolvedCount) resolved by you)" : ""),
+                 color: MatchStatus.match.color)
             Pill(text: "\(model.needsReviewCount) to review", color: MatchStatus.unconfirmed.color)
             Pill(text: "\(model.issueCount) with issues", color: MatchStatus.mismatch.color)
             Pill(text: "\(model.notFoundCount) not found", color: MatchStatus.mismatch.color)

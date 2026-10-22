@@ -49,6 +49,36 @@ Run the unit tests with `swift test` or ⌘U.
    need attention, and ↻ on a card to check one reference again.
 4. **Print** or **Export HTML**.
 
+### Marking a reference as resolved
+
+If you have checked a flagged reference yourself (e.g. an accepted venue abbreviation or an online-first year), choose
+**Resolve** on its card and optionally give a reason. The reference then counts as verified: green badge and border,
+included in the *verified* count, hidden from the *To check* filter. The decision stays visible, though:
+
+- the badge reads **Resolved** together with the automatic verdict (*was: 2 issues*),
+- a line states when you resolved it and why,
+- the field table, the highlights and the evidence keep their automatic colours,
+- the printed/HTML report marks it as *Resolved manually*.
+
+**Reopen** (or *Undo*) restores the automatic verdict. Resolutions are stored by the reference text, ignoring line
+breaks and punctuation, so they persist across re-checks, re-splitting and reopening the paper later.
+
+### Searching the reference list
+
+The search field above the reference list highlights every match (ignoring case and accents) and shows
+*n of m*. Use ↩ or the arrows to move between matches. ⌘F inside the text, or *Edit › Find in Reference List…* (⌥⌘F),
+opens the standard find bar with *Replace*. On a result card, the magnifier button scrolls the list to that
+reference and selects its beginning.
+
+### Browser pane
+
+*View › Show Browser* (⇧⌘B), or the *Browser* toolbar button, opens a browser pane on the right. The **Website** button
+on a card opens the record there: the DOI landing page, otherwise the provider's landing page (e.g. the AISeL page).
+For a reference that was not found, the button says **Search Scholar** and runs a Google Scholar search for it. The
+pane has back/forward, reload and an address field that takes URLs, DOIs or search terms, plus a button that opens the
+current page in your default browser. The card shown in the pane is outlined in the accent colour, and the page and
+history stay when you hide the pane.
+
 ### Settings (⌘,)
 
 - Enable or disable Crossref / DBLP / OpenAlex.
@@ -140,7 +170,8 @@ Sources/RefCheckerCore/      platform-independent logic
   ReferenceChecker.swift     lookup strategy per reference
   HTMLReport.swift           printable side-by-side report
   Models.swift, TextUtilities.swift
-Sources/RefChecker/          SwiftUI app (PDFKit text extraction, UI, printing)
+Sources/RefChecker/          SwiftUI app (PDFKit text extraction, UI, printing,
+                             searchable reference list, browser pane)
 Tests/RefCheckerCoreTests/   unit tests
 Support/Info.plist           app bundle metadata
 build-app.sh                 builds build/RefChecker.app
