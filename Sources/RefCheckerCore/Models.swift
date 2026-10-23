@@ -62,6 +62,8 @@ public struct RetrievedMetadata: Hashable, Sendable {
     public var url: String?
     /// Landing pages known for this record (used to find the AIS eLibrary page).
     public var links: [String]
+    /// Entries the provider listed as authors that are affiliations; excluded from `authors`.
+    public var ignoredAuthors: [IgnoredAuthor] = []
 
     public init(provider: String, title: String, subtitle: String? = nil, authors: [Author] = [],
                 year: String? = nil, alternativeYears: [String] = [], venue: String? = nil,
@@ -116,6 +118,21 @@ public struct RetrievedMetadata: Hashable, Sendable {
         if !venuePart.isEmpty { s += " \(venuePart)." }
         if let doi, !doi.isEmpty { s += " https://doi.org/\(doi)" }
         return s
+    }
+}
+
+/// An entry a provider listed as author that is really an affiliation (university, company …).
+public struct IgnoredAuthor: Hashable, Sendable {
+    public var name: String
+    /// true when the provider itself labels the string as an affiliation; false when it was
+    /// recognised only by its wording ("University", "GmbH" …).
+    public var isCertain: Bool
+    public var reason: String
+
+    public init(name: String, isCertain: Bool, reason: String) {
+        self.name = name
+        self.isCertain = isCertain
+        self.reason = reason
     }
 }
 

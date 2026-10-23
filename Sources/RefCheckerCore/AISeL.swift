@@ -142,10 +142,15 @@ public struct AISeLProvider: Sendable {
         func value(_ keys: String...) -> String? { values(keys).first }
 
         guard let title = value("bepress_citation_title", "citation_title", "dc.title") else { return nil }
-        let authors = values(["bepress_citation_author", "citation_author", "dc.creator"]).map { name -> Author in
-            let parts = name.components(separatedBy: ",").map { $0.trimmed }
+        // AISeL sometimes lists affiliations as co-authors; its own institution tags tell them apart.
+        let institutions = tags.filter { ["bepress_citation_author_institution", "citation_author_institution"].contains($0.name) }
+            .map(\.content)
+        let separated = Affiliations.separate(values(["bepress_citation_author", "citation_author", "dc.creator"]),
+                                              institutions: institutions, provider: name)
+        let authors = separated.authors.map { entry -> Author in
+            let parts = entry.components(separatedBy: ",").map { $0.trimmed }
             if parts.count >= 2, !parts[0].isEmpty { return Author(given: parts[1].nilIfEmpty, family: parts[0]) }
-            return DBLPProvider.author(from: name)
+            return DBLPProvider.author(from: entry)
         }
         let dates = [value("bepress_citation_date", "citation_publication_date", "citation_date", "dc.date"),
                      value("bepress_citation_online_date", "citation_online_date")]
@@ -172,7 +177,7 @@ public struct AISeLProvider: Sendable {
         let last = value("bepress_citation_lastpage", "citation_lastpage")
         let pages = first.map { f in last.map { $0 != f ? "\(f)-\($0)" : f } ?? f }
 
-        return RetrievedMetadata(
+        var record = RetrievedMetadata(
             provider: name, title: title, authors: authors,
             year: year, alternativeYears: Array(Set(dates)).filter { $0 != year }.sorted(),
             venue: venue, venueAliases: aliases,
@@ -184,5 +189,7 @@ public struct AISeLProvider: Sendable {
             },
             publisher: "Association for Information Systems",
             type: type, url: url, links: [url])
+        record.ignoredAuthors = separated.ignored
+        return record
     }
 }

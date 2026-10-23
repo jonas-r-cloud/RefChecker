@@ -48,18 +48,31 @@ public enum Comparator {
                 }
             }
             let found = meta.authors.count - missing.count
-            var note: String?
+            var notes: [String] = []
+            var status: MatchStatus = missing.isEmpty ? .match : .mismatch
             if !missing.isEmpty {
-                note = ref.hasEtAl && found > 0
-                    ? "Shortened with “et al.” – not listed: \(missing.joined(separator: ", "))"
-                    : "Not found in reference: \(missing.joined(separator: ", "))"
+                // Organisations listed as authors by a provider are probably affiliations: not an error, but not confirmed.
+                let orgLike = missing.filter(Affiliations.looksLikeOrganization)
+                if orgLike.count == missing.count {
+                    status = .unconfirmed
+                    notes.append("\(meta.provider) lists “\(orgLike.joined(separator: "”, “"))” as author – probably an affiliation; check manually")
+                } else {
+                    notes.append(ref.hasEtAl && found > 0
+                        ? "Shortened with “et al.” – not listed: \(missing.joined(separator: ", "))"
+                        : "Not found in reference: \(missing.joined(separator: ", "))")
+                }
+            }
+            if !meta.ignoredAuthors.isEmpty {
+                notes.append("Ignored, not authors: " + meta.ignoredAuthors.map { "“\($0.name)” (\($0.reason))" }.joined(separator: "; "))
+                // Only a removal the provider itself backs keeps the field green.
+                if status == .match, meta.ignoredAuthors.contains(where: { !$0.isCertain }) { status = .unconfirmed }
             }
             fields.append(FieldComparison(
                 field: "Authors",
                 original: ref.authorsText,
                 retrieved: meta.authors.map(\.display).joined(separator: "; "),
-                status: missing.isEmpty ? .match : .mismatch,
-                note: note))
+                status: status,
+                note: notes.isEmpty ? nil : notes.joined(separator: ". ")))
         }
 
         // Year

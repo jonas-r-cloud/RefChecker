@@ -219,3 +219,63 @@ final class ResolutionTests: XCTestCase {
         XCTAssertEqual(Resolution.key(for: a), Resolution.key(for: b))
     }
 }
+
+final class AffiliationTests: XCTestCase {
+    let url = "https://aisel.aisnet.org/icis2020/digital_learning_env/digital_learning_env/3/"
+    let ref = ReferenceParser.parse("Smith, J., & Müller, A. (2020). Digital nudging in online platforms. In Proceedings of the International Conference on Information Systems (ICIS 2020).",
+                                    label: "1", id: 0)
+
+    func page(_ authorTags: String) -> String {
+        """
+        <meta name="bepress_citation_series_title" content="ICIS 2020 Proceedings">
+        \(authorTags)
+        <meta name="bepress_citation_title" content="Digital Nudging in Online Platforms">
+        <meta name="bepress_citation_date" content="2020">
+        """
+    }
+
+    func testInstitutionListedAsAuthorIsDroppedWithCertainty() {
+        let html = page("""
+        <meta name="bepress_citation_author" content="Smith, John">
+        <meta name="bepress_citation_author_institution" content="University of Bamberg">
+        <meta name="bepress_citation_author" content="University of Bamberg">
+        <meta name="bepress_citation_author" content="Müller, Anna">
+        """)
+        let m = AISeLProvider.parseRecord(html: html, url: url)!
+        XCTAssertEqual(m.authors.map(\.family), ["Smith", "Müller"])
+        XCTAssertEqual(m.ignoredAuthors.map(\.isCertain), [true])
+        let authors = Comparator.compare(ref, with: m).fields.first { $0.field == "Authors" }!
+        XCTAssertEqual(authors.status, .match, "AISeL itself labels it an institution")
+        XCTAssertTrue(authors.note?.contains("University of Bamberg") == true)
+    }
+
+    func testAffiliationAppendedToNameIsSplitOff() {
+        let html = page("""
+        <meta name="bepress_citation_author" content="Smith, John, University of Bamberg">
+        <meta name="bepress_citation_author" content="Müller, Anna">
+        """)
+        let m = AISeLProvider.parseRecord(html: html, url: url)!
+        XCTAssertEqual(m.authors.map(\.display), ["John Smith", "Anna Müller"])
+        XCTAssertEqual(m.ignoredAuthors.first?.name, "University of Bamberg")
+    }
+
+    func testOrganisationRecognisedOnlyByWordingIsAmber() {
+        let html = page("""
+        <meta name="bepress_citation_author" content="Smith, John">
+        <meta name="bepress_citation_author" content="SAP SE">
+        <meta name="bepress_citation_author" content="Müller, Anna">
+        """)
+        let m = AISeLProvider.parseRecord(html: html, url: url)!
+        XCTAssertEqual(m.authors.count, 2)
+        XCTAssertEqual(m.ignoredAuthors.map(\.isCertain), [false])
+        XCTAssertEqual(Comparator.compare(ref, with: m).fields.first { $0.field == "Authors" }?.status, .unconfirmed)
+    }
+
+    func testPeopleWithKeywordSurnamesStayAuthors() {
+        XCTAssertFalse(Affiliations.looksLikeOrganization("Bank, Michael"))
+        XCTAssertFalse(Affiliations.looksLikeOrganization("Center, Mary J."))
+        XCTAssertTrue(Affiliations.looksLikeOrganization("Bamberg, University of"))
+        XCTAssertTrue(Affiliations.looksLikeOrganization("Technische Universität München"))
+        XCTAssertFalse(Affiliations.looksLikeOrganization("van der Aalst, Wil M. P."))
+    }
+}

@@ -95,6 +95,19 @@ citation meta tags give the title, authors and date, and the collection in the U
 *International Conference on Information Systems (ICIS 2020)*, and the reference counts as matching if it names the
 conference in full, as "ICIS 2020" or as "ICIS 2020 Proceedings".
 
+AISeL pages sometimes list a university or company as a co-author, or append it to an author's name
+("Smith, John, University of Bamberg"). RefChecker separates these affiliations from the authors:
+
+- An entry that AISeL itself tags as an institution (`bepress_citation_author_institution`) is dropped with certainty,
+  so the Authors field can still be green.
+- An entry recognised only by its wording ("University", "Institut", "GmbH", "SAP SE", …) is dropped too, but the
+  Authors field becomes amber, because the decision is a heuristic.
+- People whose surname is such a word ("Bank, Michael") stay authors.
+- If every author of a record would be dropped on wording alone, nothing is dropped.
+
+The Authors row says what was ignored and why. For other providers nothing is dropped, but a missing "author" that
+looks like an organisation makes the field amber instead of red.
+
 AISeL is consulted when
 - the reference names an AIS conference or AISeL,
 - the best generic record is attributed to an AIS outlet that the reference does not name, or
@@ -167,6 +180,7 @@ Sources/RefCheckerCore/      platform-independent logic
   Comparator.swift           field comparison, highlighting, candidate scoring
   PageCleaner.swift          header/footer removal for PDF text
   AISeL.swift                AIS eLibrary landing pages, conference detection
+  Affiliations.swift         separating affiliations listed as authors
   ReferenceChecker.swift     lookup strategy per reference
   HTMLReport.swift           printable side-by-side report
   Models.swift, TextUtilities.swift
