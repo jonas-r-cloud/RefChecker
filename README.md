@@ -105,8 +105,20 @@ AISeL pages sometimes list a university or company as a co-author, or append it 
 - People whose surname is such a word ("Bank, Michael") stay authors.
 - If every author of a record would be dropped on wording alone, nothing is dropped.
 
-The Authors row says what was ignored and why. For other providers nothing is dropped, but a missing "author" that
-looks like an organisation makes the field amber instead of red.
+The Authors row says what was ignored and why.
+
+The same applies to **Crossref, doi.org and OpenAlex** records. Some publishers deposit affiliations as authors; the
+Journal of the AIS, for example, lists "Dorothy E. Leidner", "Baylor University, USA", "Olgerta Tona",
+"University of Gothenburg, Sweden". An affiliation is set aside **for certain** when the record's own affiliation data
+names it, or when an organisation word comes with a country ("…University, USA"), also when the record splits it into
+two entries ("Baylor University" + "USA"). Otherwise it is set aside on wording alone, and the field stays amber
+unless an independent source (e.g. DBLP) lists exactly the reference's authors. DBLP is not filtered, because its
+author data is curated.
+
+**References that repeat the error** are flagged red. When a reference's own author list contains affiliations
+("Dorothy E. Leidner, Baylor University, USA, Olgerta Tona, …"), the Authors field is red with *The reference lists
+affiliations as authors: "Baylor University, USA", … – remove them*, and those passages are highlighted red. A corporate
+author standing alone (e.g. "American Psychological Association") is not flagged.
 
 AISeL is consulted when
 - the reference names an AIS conference or AISeL,

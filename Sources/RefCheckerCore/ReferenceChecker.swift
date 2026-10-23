@@ -190,11 +190,14 @@ public final class ReferenceChecker: Sendable {
         var f = field
         var evidence = [Evidence(source: best.provider, authority: best.authority, value: field.retrieved,
                                  agrees: field.status == .unavailable ? nil : field.status == .match || field.status == .unconfirmed)]
+        var strictlyAgreeing: [Evidence] = []
         for other in others {
             let theirs = Comparator.compare(ref, with: other, options: configuration.options).fields
                 .first { $0.field == field.field || (field.field == "Publisher" && $0.field == "Venue") }
             let agrees: Bool? = theirs.flatMap { $0.status == .unavailable ? nil : ($0.status == .match || $0.status == .unconfirmed) }
-            evidence.append(Evidence(source: other.provider, authority: other.authority, value: theirs?.retrieved, agrees: agrees))
+            let e = Evidence(source: other.provider, authority: other.authority, value: theirs?.retrieved, agrees: agrees)
+            evidence.append(e)
+            if theirs?.status == .match { strictlyAgreeing.append(e) }
         }
         f.evidence = evidence
 
@@ -221,6 +224,15 @@ public final class ReferenceChecker: Sendable {
             }
         case .unconfirmed:
             f.explanation = field.note
+            // Affiliations were set aside on wording alone; an independent source whose author list
+            // matches the reference exactly confirms that decision.
+            if field.field == "Authors", identification.level != .probable,
+               best.ignoredAuthors.contains(where: { !$0.isCertain }),
+               !(field.note ?? "").contains("probably an affiliation"),
+               !strictlyAgreeing.isEmpty {
+                f.status = .match
+                f.explanation = "Confirmed by \(describe(strictlyAgreeing)); \(best.provider)'s extra entries are affiliations."
+            }
         case .mismatch, .missing:
             let backing = evidence.dropFirst().filter { $0.agrees == true }
             f.explanation = backing.isEmpty

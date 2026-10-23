@@ -279,3 +279,59 @@ final class AffiliationTests: XCTestCase {
         XCTAssertFalse(Affiliations.looksLikeOrganization("van der Aalst, Wil M. P."))
     }
 }
+
+final class CrossrefAffiliationTests: XCTestCase {
+    let correct = "Leidner, D. E., & Tona, O. (2021). A Thought-Gear Model of Theorizing from Literature. Journal of the Association for Information Systems, 22(4), 874–892. https://doi.org/10.17705/1jais.00683"
+    let incorrect = "Dorothy E. Leidner, Baylor University, USA, Olgerta Tona, University of Gothenburg, Sweden (2021). A Thought-Gear Model of Theorizing from Literature. Journal of the Association for Information Systems, 22(4), 874-892. https://doi.org/10.17705/1jais.00683"
+
+    /// Crossref record of 10.17705/1jais.00683 with affiliations deposited as authors.
+    func record(_ authors: [[String: Any]]) -> RetrievedMetadata {
+        CSLParser.metadata([
+            "title": ["A Thought-Gear Model of Theorizing from Literature"],
+            "author": authors,
+            "issued": ["date-parts": [[2021]]],
+            "container-title": ["Journal of the Association for Information Systems"],
+            "volume": "22", "issue": "4", "page": "874-892", "DOI": "10.17705/1jais.00683"
+        ], provider: "Crossref")!
+    }
+
+    let asNames: [[String: Any]] = [
+        ["given": "Dorothy E.", "family": "Leidner"], ["name": "Baylor University, USA"],
+        ["given": "Olgerta", "family": "Tona"], ["name": "University of Gothenburg, Sweden"]
+    ]
+    let splitIntoTwo: [[String: Any]] = [
+        ["given": "Dorothy E.", "family": "Leidner"], ["family": "Baylor University"], ["family": "USA"],
+        ["given": "Olgerta", "family": "Tona"], ["given": "University of Gothenburg", "family": "Sweden"]
+    ]
+
+    func testAffiliationsAreSeparatedFromCrossrefAuthors() {
+        for authors in [asNames, splitIntoTwo] {
+            let m = record(authors)
+            XCTAssertEqual(m.authors.map(\.family), ["Leidner", "Tona"])
+            XCTAssertTrue(m.ignoredAuthors.allSatisfy(\.isCertain), "\(m.ignoredAuthors)")
+        }
+    }
+
+    func testCorrectReferenceIsGreen() {
+        let ref = ReferenceParser.parse(correct, label: "1", id: 0)
+        let fields = Dictionary(uniqueKeysWithValues: Comparator.compare(ref, with: record(asNames)).fields.map { ($0.field, $0.status) })
+        XCTAssertEqual(fields["Authors"], .match)
+        XCTAssertEqual(fields["Title"], .match)
+        XCTAssertEqual(fields["DOI"], .match)
+    }
+
+    func testReferenceListingAffiliationsAsAuthorsIsRed() {
+        let ref = ReferenceParser.parse(incorrect, label: "1", id: 0)
+        let comparison = Comparator.compare(ref, with: record(asNames))
+        let authors = comparison.fields.first { $0.field == "Authors" }!
+        XCTAssertEqual(authors.status, .mismatch)
+        XCTAssertTrue(authors.note?.contains("“Baylor University, USA”, “University of Gothenburg, Sweden”") == true, authors.note ?? "")
+        XCTAssertTrue(comparison.highlights.contains { $0.status == .mismatch && $0.field == "Authors" })
+    }
+
+    func testSoleCorporateAuthorIsNotFlagged() {
+        XCTAssertEqual(Affiliations.inAuthorList("American Psychological Association"), [])
+        XCTAssertEqual(Affiliations.inAuthorList("Dorothy E. Leidner, Baylor University, USA, Olgerta Tona"),
+                       ["Baylor University, USA"])
+    }
+}

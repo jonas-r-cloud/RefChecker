@@ -85,11 +85,14 @@ enum CSLParser {
     static func metadata(_ item: [String: Any], provider: String) -> RetrievedMetadata? {
         guard let title = string(item["title"]) else { return nil }
         let people = (item["author"] as? [[String: Any]]) ?? (item["editor"] as? [[String: Any]]) ?? []
-        let authors = people.compactMap { a -> Author? in
+        let listed = people.compactMap { a -> Author? in
             if let family = (a["family"] as? String)?.nilIfEmpty { return Author(given: a["given"] as? String, family: family) }
             if let name = (a["name"] as? String ?? a["literal"] as? String)?.nilIfEmpty { return Author(given: nil, family: name) }
             return nil
         }
+        // Some publishers (e.g. the Journal of the AIS) deposit affiliations as authors.
+        let institutions = people.flatMap { ($0["affiliation"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String } }
+        let (authors, ignoredAuthors) = Affiliations.separate(authors: listed, institutions: institutions, provider: provider)
         let issued = year(item["issued"])
         var alternatives = [year(item["published-print"]), year(item["published-online"]), year(item["published"])]
             .compactMap { $0 }
@@ -98,7 +101,7 @@ enum CSLParser {
         let short = strings(item["short-container-title"]) + strings(item["container-title-short"])
         var doi = string(item["DOI"])
         if doi == nil, let u = string(item["URL"]), let r = u.range(of: "doi.org/") { doi = String(u[r.upperBound...]) }
-        return RetrievedMetadata(
+        var record = RetrievedMetadata(
             provider: provider,
             title: title,
             subtitle: string(item["subtitle"]),
@@ -115,6 +118,8 @@ enum CSLParser {
             type: item["type"] as? String,
             url: string(item["URL"]),
             links: strings(item["URL"]) + ((item["link"] as? [[String: Any]]) ?? []).compactMap { $0["URL"] as? String })
+        record.ignoredAuthors = ignoredAuthors
+        return record
     }
 }
 
@@ -213,18 +218,24 @@ public struct OpenAlexProvider: MetadataProvider {
               let results = json["results"] as? [[String: Any]] else { return [] }
         return results.compactMap { w in
             guard let title = CSLParser.string(w["title"]) ?? CSLParser.string(w["display_name"]) else { return nil }
-            let authors = ((w["authorships"] as? [[String: Any]]) ?? []).compactMap { a -> Author? in
+            let authorships = (w["authorships"] as? [[String: Any]]) ?? []
+            let listed = authorships.compactMap { a -> Author? in
                 guard let n = (a["author"] as? [String: Any])?["display_name"] as? String ?? a["raw_author_name"] as? String
                 else { return nil }
                 return DBLPProvider.author(from: n)
             }
+            let institutions = authorships.flatMap { a in
+                ((a["institutions"] as? [[String: Any]]) ?? []).compactMap { $0["display_name"] as? String }
+                    + ((a["raw_affiliation_strings"] as? [String]) ?? [])
+            }
+            let (authors, ignoredAuthors) = Affiliations.separate(authors: listed, institutions: institutions, provider: name)
             let source = ((w["primary_location"] as? [String: Any])?["source"] as? [String: Any])
             let biblio = w["biblio"] as? [String: Any] ?? [:]
             var pages = CSLParser.string(biblio["first_page"])
             if let p = pages, let last = CSLParser.string(biblio["last_page"]), last != p { pages = "\(p)-\(last)" }
             var doi = CSLParser.string(w["doi"])
             if let d = doi, let r = d.range(of: "doi.org/") { doi = String(d[r.upperBound...]) }
-            return RetrievedMetadata(
+            var record = RetrievedMetadata(
                 provider: name, title: title, authors: authors,
                 year: CSLParser.string(w["publication_year"]),
                 venue: CSLParser.string(source?["display_name"]),
@@ -235,6 +246,8 @@ public struct OpenAlexProvider: MetadataProvider {
                 type: w["type"] as? String, url: CSLParser.string(w["id"]),
                 links: (((w["locations"] as? [[String: Any]]) ?? []) + [w["primary_location"] as? [String: Any] ?? [:]])
                     .compactMap { $0["landing_page_url"] as? String })
+            record.ignoredAuthors = ignoredAuthors
+            return record
         }
     }
 }

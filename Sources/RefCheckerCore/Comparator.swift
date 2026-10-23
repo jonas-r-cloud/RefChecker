@@ -67,6 +67,15 @@ public enum Comparator {
                 // Only a removal the provider itself backs keeps the field green.
                 if status == .match, meta.ignoredAuthors.contains(where: { !$0.isCertain }) { status = .unconfirmed }
             }
+            // References generated from faulty metadata repeat the affiliations as authors.
+            let written = Affiliations.inAuthorList(ref.authorsText, ignored: meta.ignoredAuthors)
+            if !written.isEmpty {
+                status = .mismatch
+                notes.insert("The reference lists affiliations as authors: “\(written.joined(separator: "”, “"))” – remove them", at: 0)
+                for affiliation in written {
+                    if let r = text.find(affiliation) { highlights.append(Highlight(r, .mismatch, field: "Authors")) }
+                }
+            }
             fields.append(FieldComparison(
                 field: "Authors",
                 original: ref.authorsText,
