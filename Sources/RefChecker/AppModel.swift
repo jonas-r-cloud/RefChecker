@@ -64,16 +64,23 @@ final class AppModel: ObservableObject {
                 sectionText = text
                 notice = "No “References” heading was found, so the whole text is shown. Delete everything except the reference list and choose “Split into References”."
             }
-            parseSection()
+            // Without a "References" heading the whole paper is shown; leave it as is for trimming.
+            parseSection(reformat: notice == nil)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func parseSection() {
+    /// Splits the reference list. With `reformat`, the list is rewritten as one reference per
+    /// paragraph (shown with hanging indent), separated by empty lines; an empty line always splits.
+    func parseSection(reformat: Bool = true) {
         cancel()
-        references = ReferenceParser.parse(section: sectionText)
+        let entries = ReferenceSplitter.split(sectionText)
+        references = ReferenceParser.parse(entries: entries)
         results = [:]
+        if reformat, !entries.isEmpty {
+            sectionText = ReferenceSplitter.format(entries)
+        }
     }
 
     // MARK: Checking

@@ -64,6 +64,8 @@ public struct RetrievedMetadata: Hashable, Sendable {
     public var links: [String]
     /// Entries the provider listed as authors that are affiliations; excluded from `authors`.
     public var ignoredAuthors: [IgnoredAuthor] = []
+    /// Article number (eLocator) of journals without page numbers, e.g. 122886 or e1234.
+    public var articleNumber: String?
 
     public init(provider: String, title: String, subtitle: String? = nil, authors: [Author] = [],
                 year: String? = nil, alternativeYears: [String] = [], venue: String? = nil,
@@ -114,10 +116,32 @@ public struct RetrievedMetadata: Hashable, Sendable {
             venuePart += venuePart.isEmpty ? "Vol. \(volume)" : ", \(volume)"
             if let issue, !issue.isEmpty { venuePart += "(\(issue))" }
         }
+        if let articleNumber, !articleNumber.isEmpty {
+            venuePart += venuePart.isEmpty ? "Article \(articleNumber)" : ", \(articleNumber)"
+        }
         if let pages, !pages.isEmpty { venuePart += venuePart.isEmpty ? "pp. \(pages)" : ", \(pages)" }
         if !venuePart.isEmpty { s += " \(venuePart)." }
         if let doi, !doi.isEmpty { s += " https://doi.org/\(doi)" }
         return s
+    }
+}
+
+/// Tells page ranges from article numbers. Providers often put the article number into the
+/// page field (Elsevier: "122886"; others: "e1234"), with first page = last page.
+public enum ArticleNumbers {
+    private static let articleRx = NSRegularExpression("^(?:e|art\\.?\\s*(?:no\\.?)?\\s*)?\\d{5,}$|^e\\d+$|^[A-Za-z]{1,3}\\d+$",
+                                                       options: [.caseInsensitive])
+
+    /// Splits provider values into (pages, article number).
+    public static func split(pages: String?, articleNumber: String?) -> (pages: String?, articleNumber: String?) {
+        let pages = pages?.nilIfEmpty
+        if let article = articleNumber?.nilIfEmpty {
+            // Some deposits repeat the article number as the page.
+            let same = pages.map { NormalizedText.key($0) == NormalizedText.key(article) } ?? false
+            return (same ? nil : pages, article)
+        }
+        guard let single = pages, !single.contains(where: { "-–—".contains($0) }) else { return (pages, nil) }
+        return articleRx.firstMatch(in: single) != nil ? (nil, single) : (pages, nil)
     }
 }
 

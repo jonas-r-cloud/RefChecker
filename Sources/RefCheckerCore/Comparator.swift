@@ -130,13 +130,17 @@ public enum Comparator {
         if options.checkVolumeIssuePages {
             let volumeIdx = meta.volume.map(text.tokenIndices(of:)) ?? []
             let issueIdx = meta.issue.map(text.tokenIndices(of:)) ?? []
+            let articleIdx = meta.articleNumber.map(text.tokenIndices(of:)) ?? []
+            let firstPageIdx = meta.pages.flatMap { NormalizedText.words($0).first }.map(text.tokenIndices(of:)) ?? []
             func key(_ i: Int) -> String { text.tokens.indices.contains(i) ? text.tokens[i].key : "" }
             func range(_ i: Int, _ j: Int) -> Range<Int> { text.tokens[i].range.lowerBound..<text.tokens[j].range.upperBound }
+            // What may follow the volume: "12(3)", "12, no. 3", "243, 122886", "12, 45–67".
+            let afterVolume = Set(issueIdx + articleIdx + firstPageIdx)
 
             if let volume = meta.volume?.nilIfEmpty {
                 let placed = volumeIdx.first { i in
-                    volumeMarkers.contains(key(i - 1))
-                        || issueIdx.contains { j in j == i + 1 || (j == i + 2 && issueMarkers.contains(key(i + 1))) }
+                    volumeMarkers.contains(key(i - 1)) || afterVolume.contains(i + 1)
+                        || (issueIdx.contains(i + 2) && issueMarkers.contains(key(i + 1)))
                 }
                 fields.append(numberField("Volume", volume, placed: placed.map { range($0, $0) },
                                           loose: volumeIdx.first.map { range($0, $0) }, what: "volume", &highlights))
@@ -148,6 +152,15 @@ public enum Comparator {
                 }
                 fields.append(numberField("Issue", issue, placed: placed.map { range($0, $0) },
                                           loose: issueIdx.first.map { range($0, $0) }, what: "issue", &highlights))
+            }
+            if let article = meta.articleNumber?.nilIfEmpty {
+                // "Article 122886", "243, 122886", "35(3), 100582", "Art. No. 7".
+                let placed = articleIdx.first { i in
+                    articleMarkers.contains(key(i - 1)) || volumeIdx.contains(i - 1) || issueIdx.contains(i - 1)
+                        || (articleMarkers.contains(key(i - 2)) && articleMarkers.contains(key(i - 1)))
+                }
+                fields.append(numberField("Article no.", article, placed: placed.map { range($0, $0) },
+                                          loose: articleIdx.first.map { range($0, $0) }, what: "article number", &highlights))
             }
             if let pages = meta.pages?.nilIfEmpty {
                 let parts = NormalizedText.words(pages)
@@ -168,7 +181,7 @@ public enum Comparator {
                         fields.append(FieldComparison(field: "Pages", original: nil, retrieved: pages, status: .missing))
                     }
                 } else {
-                    let placed = firstIdx.first { pageMarkers.contains(key($0 - 1)) }
+                    let placed = firstIdx.first { pageMarkers.contains(key($0 - 1)) || volumeIdx.contains($0 - 1) || issueIdx.contains($0 - 1) }
                     fields.append(numberField("Pages", pages, placed: placed.map { range($0, $0) },
                                               loose: firstIdx.first.map { range($0, $0) }, what: "page / article number", &highlights))
                 }
@@ -196,7 +209,8 @@ public enum Comparator {
 
     static let volumeMarkers: Set<String> = ["vol", "vols", "volume", "v", "bd", "band", "jg", "jahrgang"]
     static let issueMarkers: Set<String> = ["no", "nr", "n", "issue", "iss", "number", "num", "heft"]
-    static let pageMarkers: Set<String> = ["p", "pp", "page", "pages", "s", "art", "article", "e"]
+    static let pageMarkers: Set<String> = ["p", "pp", "page", "pages", "s"]
+    static let articleMarkers: Set<String> = ["art", "article", "artno", "no", "nr", "number", "paper", "e", "eid", "elocator"]
 
     /// Green if the number sits in a recognisable place, amber if it only occurs somewhere, red if absent.
     private static func numberField(_ field: String, _ value: String, placed: Range<Int>?, loose: Range<Int>?,

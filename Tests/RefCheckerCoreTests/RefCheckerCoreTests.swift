@@ -335,3 +335,75 @@ final class CrossrefAffiliationTests: XCTestCase {
                        ["Baylor University, USA"])
     }
 }
+
+final class ArticleNumberTests: XCTestCase {
+    func testPageFieldHoldingAnArticleNumberIsReclassified() {
+        XCTAssertEqual(ArticleNumbers.split(pages: "122886", articleNumber: nil).articleNumber, "122886")
+        XCTAssertEqual(ArticleNumbers.split(pages: "e1234", articleNumber: nil).articleNumber, "e1234")
+        XCTAssertEqual(ArticleNumbers.split(pages: "45-67", articleNumber: nil).pages, "45-67")
+        XCTAssertEqual(ArticleNumbers.split(pages: "100582", articleNumber: "100582").pages, nil)
+    }
+
+    func fields(_ reference: String, _ item: [String: Any]) -> [String: MatchStatus] {
+        let ref = ReferenceParser.parse(reference, label: "1", id: 0)
+        let meta = CSLParser.metadata(item, provider: "Crossref")!
+        return Dictionary(uniqueKeysWithValues: Comparator.compare(ref, with: meta).fields.map { ($0.field, $0.status) })
+    }
+
+    func testVolumeAndArticleNumber() {
+        let f = fields("Sheng, L., Gu, Z., & Chang, F. (2024). A novel integration strategy for uncertain knowledge in group decision-making with artificial opinions: A DSFIT-SOA-DEMATEL approach. Expert Systems with Applications, 243, 122886. https://doi.org/10.1016/j.eswa.2023.122886", [
+            "title": ["A novel integration strategy for uncertain knowledge in group decision-making with artificial opinions: A DSFIT-SOA-DEMATEL approach"],
+            "author": [["given": "Lei", "family": "Sheng"], ["given": "Zhen", "family": "Gu"], ["given": "Fei", "family": "Chang"]],
+            "issued": ["date-parts": [[2024]]], "container-title": ["Expert Systems with Applications"],
+            "volume": "243", "page": "122886", "DOI": "10.1016/j.eswa.2023.122886"])
+        XCTAssertEqual(f["Volume"], .match)
+        XCTAssertEqual(f["Article no."], .match)
+        XCTAssertNil(f["Pages"])
+        XCTAssertNil(f["Issue"])
+    }
+
+    func testVolumeIssueAndArticleNumber() {
+        let f = fields("Leonardi, P. M. (2025). Homo agenticus in the age of agentic AI: Agency loops, power displacement, and the circulation of responsibility. Information and Organization, 35(3), 100582. https://doi.org/10.1016/j.infoandorg.2025.100582", [
+            "title": ["Homo agenticus in the age of agentic AI: Agency loops, power displacement, and the circulation of responsibility"],
+            "author": [["given": "Paul M.", "family": "Leonardi"]],
+            "issued": ["date-parts": [[2025]]], "container-title": ["Information and Organization"],
+            "volume": "35", "issue": "3", "article-number": "100582", "DOI": "10.1016/j.infoandorg.2025.100582"])
+        XCTAssertEqual(f["Volume"], .match)
+        XCTAssertEqual(f["Issue"], .match)
+        XCTAssertEqual(f["Article no."], .match)
+    }
+}
+
+final class BlankLineSplitTests: XCTestCase {
+    func testEmptyLineForcesSplitInNumberedList() {
+        let entries = ReferenceSplitter.split("""
+        [1] A. Smith, “First paper,” 2020.
+
+        B. Jones, “Glued paper,” 2019.
+        [2] C. Doe, “Second paper,” 2021.
+        """)
+        XCTAssertEqual(entries.map(\.label), ["1", "1b", "2"])
+    }
+
+    func testEmptyLineForcesSplitInAuthorYearList() {
+        let entries = ReferenceSplitter.split("""
+        Smith, J. (2020). Learning to rank. Journal of Testing, 12(3), 45–67. Zhang, L. (2019).
+        Another paper. Conference on Things.
+
+        Doe, A. (2018). Third paper. Some Journal, 1, 2–3.
+        """)
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertTrue(entries[1].text.hasPrefix("Doe, A."))
+    }
+
+    func testFormattedListSplitsBackIdentically() {
+        let original = ReferenceSplitter.split("""
+        [1] A. Smith and B. Jones, “A study of infor-
+        mation retrieval,” in Proc. SIGIR, 2020.
+        [2] C. Doe, “Another title,” 2019.
+        """)
+        let formatted = ReferenceSplitter.format(original)
+        XCTAssertEqual(formatted, "[1] A. Smith and B. Jones, “A study of information retrieval,” in Proc. SIGIR, 2020.\n\n[2] C. Doe, “Another title,” 2019.")
+        XCTAssertEqual(ReferenceSplitter.split(formatted).map(\.text), original.map(\.text))
+    }
+}

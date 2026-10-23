@@ -103,7 +103,7 @@ struct InputPane: View {
             SectionTextView(text: $model.sectionText, controller: model.textController)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
             HStack {
-                Button("Split into References") { model.parseSection() }
+                Button("Split into References: Extracted Text ⇒ Structured Data") { model.parseSection() }
                     .disabled(model.sectionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Spacer()
                 Text("\(model.references.count) references")
@@ -118,7 +118,10 @@ struct InputPane: View {
 struct ReportView: View {
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All", problems = "To check", verified = "Verified"
+        // Selected via the summary pills.
+        case review = "To review", issues = "With issues", notFound = "Not found"
         var id: String { rawValue }
+        static let segments: [Filter] = [.all, .problems, .verified]
     }
 
     @EnvironmentObject private var model: AppModel
@@ -164,6 +167,14 @@ struct ReportView: View {
             guard let v = model.effectiveVerdict($0) else { return false }
             return v != .verified
         }
+        case .review, .issues, .notFound: return model.references.filter {
+            switch model.effectiveVerdict($0) {
+            case .needsReview?: return filter == .review
+            case .issues?: return filter == .issues
+            case .notFound?, .failed?: return filter == .notFound
+            default: return false
+            }
+        }
         }
     }
 }
@@ -174,11 +185,11 @@ struct SummaryBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Pill(text: "\(model.verifiedCount) verified" + (model.resolvedCount > 0 ? " (\(model.resolvedCount) resolved by you)" : ""),
-                 color: MatchStatus.match.color)
-            Pill(text: "\(model.needsReviewCount) to review", color: MatchStatus.unconfirmed.color)
-            Pill(text: "\(model.issueCount) with issues", color: MatchStatus.mismatch.color)
-            Pill(text: "\(model.notFoundCount) not found", color: MatchStatus.mismatch.color)
+            pill(.verified, "\(model.verifiedCount) verified" + (model.resolvedCount > 0 ? " (\(model.resolvedCount) resolved by you)" : ""),
+                 MatchStatus.match.color)
+            pill(.review, "\(model.needsReviewCount) to review", MatchStatus.unconfirmed.color)
+            pill(.issues, "\(model.issueCount) with issues", MatchStatus.mismatch.color)
+            pill(.notFound, "\(model.notFoundCount) not found", MatchStatus.mismatch.color)
             if model.isChecking {
                 ProgressView(value: Double(model.results.count), total: Double(max(model.references.count, 1)))
                     .frame(width: 120)
@@ -188,7 +199,7 @@ struct SummaryBar: View {
             }
             Spacer()
             Picker("Show", selection: $filter) {
-                ForEach(ReportView.Filter.allCases) { Text($0.rawValue).tag($0) }
+                ForEach(ReportView.Filter.segments) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -196,6 +207,17 @@ struct SummaryBar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    /// Clicking a pill shows only those references; clicking it again shows all.
+    private func pill(_ target: ReportView.Filter, _ text: String, _ color: Color) -> some View {
+        Button {
+            filter = filter == target ? .all : target
+        } label: {
+            Pill(text: text, color: color, isSelected: filter == target)
+        }
+        .buttonStyle(.plain)
+        .help(filter == target ? "Show all references" : "Show only these references")
     }
 }
 
@@ -265,12 +287,15 @@ struct RulesView: View {
 struct Pill: View {
     let text: String
     let color: Color
+    var isSelected = false
 
     var body: some View {
         Text(text)
-            .font(.caption.weight(.medium))
+            .font(.caption.weight(isSelected ? .bold : .medium))
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(Capsule().fill(color))
+            .overlay(Capsule().stroke(Color.primary.opacity(isSelected ? 0.7 : 0), lineWidth: 1.5))
+            .contentShape(Capsule())
     }
 }

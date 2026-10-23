@@ -63,6 +63,21 @@ included in the *verified* count, hidden from the *To check* filter. The decisio
 **Reopen** (or *Undo*) restores the automatic verdict. Resolutions are stored by the reference text, ignoring line
 breaks and punctuation, so they persist across re-checks, re-splitting and reopening the paper later.
 
+### Editing the reference list
+
+After a paper is opened, or after **Split into References**, the list on the left is laid out like a paper's
+reference list: one reference per paragraph, each paragraph's wrapped lines indented (hanging indent), and an
+empty line between references. **An empty line always ends a reference.** To split two references that were run
+together, put the cursor between them, press Return twice, and choose *Split into References* (⇧⌘R). In a numbered
+list, the split-off part gets the label of its predecessor plus a letter ("12b"). If no "References" heading was found,
+the full text is left as it is until you split it.
+
+### Filtering the results
+
+The summary pills (*verified*, *to review*, *with issues*, *not found*) are filters: click one to show only those
+references, and click it again to show all. The segmented control offers *All*, *To check* (everything not verified)
+and *Verified*.
+
 ### Searching the reference list
 
 The search field above the reference list highlights every match (ignoring case and accents) and shows
@@ -157,6 +172,15 @@ was not identified with certainty, so checking takes a little longer than before
 
 Green cannot catch errors in the publisher's own metadata.
 
+## Article numbers
+
+Many journals (e.g. Elsevier's) have no page numbers but an article number, with or without an issue:
+*Expert Systems with Applications, 243, 122886* or *Information and Organization, 35(3), 100582*. Providers often
+put that number in the page field. RefChecker keeps it as a separate **Article no.** field: a single value with five
+or more digits, or of the form `e1234`, counts as an article number, not a page. It is green when it follows the
+volume or issue or a marker like "Article"/"Art. No.", and the volume counts as placed when an issue, article number
+or first page follows it.
+
 ## How matching works
 
 | Field | Green when … |
@@ -165,7 +189,7 @@ Green cannot catch errors in the publisher's own metadata.
 | Authors | every retrieved family name occurs as a word in the reference (“et al.” is reported as incomplete) |
 | Year | the reference year equals the issued, print or online year |
 | Venue | the journal/proceedings name or one of its official abbreviations occurs in the reference |
-| Volume / Issue / Pages | the numbers occur in the reference |
+| Volume / Issue / Pages / Article no. | the numbers appear in a recognisable place: `vol. 12`, `12(3)`, `45–67`, `243, 122886`, `35(3), 100582`, `Article 122886` |
 | DOI | the reference gives the same DOI |
 
 If a title or venue differs, the app shows the most similar passage of the reference, highlighted red, next to the

@@ -119,6 +119,8 @@ enum CSLParser {
             url: string(item["URL"]),
             links: strings(item["URL"]) + ((item["link"] as? [[String: Any]]) ?? []).compactMap { $0["URL"] as? String })
         record.ignoredAuthors = ignoredAuthors
+        (record.pages, record.articleNumber) = ArticleNumbers.split(pages: string(item["page"]),
+                                                                   articleNumber: string(item["article-number"]))
         return record
     }
 }
@@ -181,15 +183,18 @@ public struct DBLPProvider: MetadataProvider {
                 return Self.author(from: Self.disambiguationRx.replacing(in: text, with: ""))
             }
             let venues = CSLParser.strings(info["venue"])
-            return RetrievedMetadata(
+            let numbers = ArticleNumbers.split(pages: CSLParser.string(info["pages"]), articleNumber: nil)
+            var record = RetrievedMetadata(
                 provider: name, title: title, authors: authors,
                 year: CSLParser.string(info["year"]),
                 venue: venues.first, venueAliases: Array(venues.dropFirst()),
                 volume: CSLParser.string(info["volume"]), issue: CSLParser.string(info["number"]),
-                pages: CSLParser.string(info["pages"]), doi: CSLParser.string(info["doi"]),
+                pages: numbers.pages, doi: CSLParser.string(info["doi"]),
                 publisher: CSLParser.string(info["publisher"]), type: info["type"] as? String,
                 url: CSLParser.string(info["ee"]),
                 links: CSLParser.strings(info["ee"]) + CSLParser.strings(info["url"]))
+            record.articleNumber = numbers.articleNumber
+            return record
         }
     }
 
@@ -247,6 +252,7 @@ public struct OpenAlexProvider: MetadataProvider {
                 links: (((w["locations"] as? [[String: Any]]) ?? []) + [w["primary_location"] as? [String: Any] ?? [:]])
                     .compactMap { $0["landing_page_url"] as? String })
             record.ignoredAuthors = ignoredAuthors
+            (record.pages, record.articleNumber) = ArticleNumbers.split(pages: pages, articleNumber: nil)
             return record
         }
     }

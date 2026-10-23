@@ -38,6 +38,16 @@ public enum ReferenceSplitter {
     public struct Entry: Hashable, Sendable {
         public var label: String
         public var text: String
+        /// The numbering as printed ("[1]", "1."), empty for author–year lists.
+        public var marker: String = ""
+    }
+
+    private static let blankLineRx = NSRegularExpression("\\n[ \\t]*\\n")
+
+    /// One reference per paragraph, separated by empty lines – the layout the editor shows
+    /// (with hanging indent) and that splits back into the same entries.
+    public static func format(_ entries: [Entry]) -> String {
+        entries.map { $0.marker.isEmpty ? $0.text : "\($0.marker) \($0.text)" }.joined(separator: "\n\n")
     }
 
     public static func split(_ section: String) -> [Entry] {
@@ -46,7 +56,7 @@ public enum ReferenceSplitter {
         if let e = splitNumbered(text, bracketed: true) { return e }
         if let e = splitNumbered(text, bracketed: false) { return e }
         if let e = splitAlphaLabels(text) { return e }
-        if let e = splitBlankLines(text) { return e }
+        // Author–year lists: line heuristics, and every empty line ends a reference.
         return splitAuthorYear(text)
     }
 
@@ -105,27 +115,21 @@ public enum ReferenceSplitter {
     }
 
     private static func entries(from markers: [(label: String, range: Range<String.Index>)], in text: String) -> [Entry] {
-        markers.indices.compactMap { i in
+        markers.indices.flatMap { i -> [Entry] in
             let end = i + 1 < markers.count ? markers[i + 1].range.lowerBound : text.endIndex
-            let body = joinLines(text[markers[i].range.upperBound..<end].components(separatedBy: "\n"))
-            return body.isEmpty ? nil : Entry(label: markers[i].label, text: body)
+            let marker = String(text[markers[i].range]).trimmed
+            // An empty line always ends a reference; text after it becomes "12b", "12c", …
+            let chunks = blankLineRx.split(String(text[markers[i].range.upperBound..<end]))
+                .map { joinLines($0.components(separatedBy: "\n")) }
+                .filter { !$0.isEmpty }
+            return chunks.enumerated().map { n, body in
+                n == 0 ? Entry(label: markers[i].label, text: body, marker: marker)
+                       : Entry(label: markers[i].label + String(Character(Unicode.Scalar(UInt8(97 + min(n, 25))))), text: body)
+            }
         }
     }
 
     private static let yearRx = NSRegularExpression("\\b(1[89]\\d{2}|20\\d{2})")
-
-    /// Entries separated by empty lines (typical for pasted reference lists).
-    static func splitBlankLines(_ text: String) -> [Entry]? {
-        let chunks = text.components(separatedBy: "\n")
-            .split(whereSeparator: { $0.trimmed.isEmpty })
-            .map { joinLines(Array($0)) }
-            .filter { $0.count > 15 }
-        guard chunks.count >= 2 else { return nil }
-        let withYear = chunks.filter { yearRx.firstMatch(in: $0) != nil }.count
-        let averageLength = chunks.map(\.count).reduce(0, +) / chunks.count
-        guard Double(withYear) >= 0.8 * Double(chunks.count), averageLength < 700 else { return nil }
-        return chunks.enumerated().map { Entry(label: "\($0.offset + 1)", text: $0.element) }
-    }
 
     private static let authorStartRx = NSRegularExpression(
         "^(?:(?:van|von|de|der|den|del|della|da|di|du|le|la|ten|ter|dos)\\s+)*" +
@@ -140,7 +144,12 @@ public enum ReferenceSplitter {
         var current: [String] = []
         for line in text.components(separatedBy: "\n") {
             let t = line.trimmed
-            guard !t.isEmpty else { continue }
+            guard !t.isEmpty else {
+                // An empty line always ends a reference.
+                if !current.isEmpty { entries.append(joinLines(current)) }
+                current = []
+                continue
+            }
             if let previous = current.last, endsEntry(previous),
                authorStartRx.firstMatch(in: t) != nil,
                yearRx.firstMatch(in: current.joined(separator: " ")) != nil {
@@ -193,7 +202,11 @@ public enum ReferenceSplitter {
 /// Extracts fields (authors, title, venue, year, DOI) from a single entry.
 public enum ReferenceParser {
     public static func parse(section: String) -> [ParsedReference] {
-        ReferenceSplitter.split(section).enumerated().map { index, entry in
+        parse(entries: ReferenceSplitter.split(section))
+    }
+
+    public static func parse(entries: [ReferenceSplitter.Entry]) -> [ParsedReference] {
+        entries.enumerated().map { index, entry in
             parse(entry.text, label: entry.label, id: index)
         }
     }

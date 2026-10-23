@@ -115,7 +115,6 @@ struct SectionTextView: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isContinuousSpellCheckingEnabled = false
-        textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         textView.textContainerInset = NSSize(width: 4, height: 6)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
@@ -123,6 +122,7 @@ struct SectionTextView: NSViewRepresentable {
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.string = text
+        Self.applyStyle(textView)
         textView.delegate = context.coordinator
 
         let scrollView = NSScrollView()
@@ -140,12 +140,36 @@ struct SectionTextView: NSViewRepresentable {
         controller.textView = textView
         if textView.string != text {
             textView.string = text
+            Self.applyStyle(textView)
             // Defer: publishing from inside a view update is not allowed.
             Task { @MainActor in controller.updateSearch(selectFirst: false) }
         }
     }
 
     @MainActor
+    /// Like a paper's reference list: every paragraph is one reference, its wrapped lines indented.
+    static let paragraphStyle: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.firstLineHeadIndent = 0
+        style.headIndent = 20
+        style.lineSpacing = 1
+        return style
+    }()
+
+    @MainActor
+    static func applyStyle(_ textView: NSTextView) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12),
+            .paragraphStyle: paragraphStyle,
+            .foregroundColor: NSColor.textColor
+        ]
+        textView.defaultParagraphStyle = paragraphStyle
+        textView.typingAttributes = attributes
+        if let storage = textView.textStorage {
+            storage.setAttributes(attributes, range: NSRange(location: 0, length: storage.length))
+        }
+    }
+
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: SectionTextView
 

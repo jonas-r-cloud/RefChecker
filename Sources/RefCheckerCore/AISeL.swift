@@ -190,6 +190,7 @@ public struct AISeLProvider: Sendable {
             publisher: "Association for Information Systems",
             type: type, url: url, links: [url])
         record.ignoredAuthors = separated.ignored
+        (record.pages, record.articleNumber) = ArticleNumbers.split(pages: pages, articleNumber: nil)
         return record
     }
 }

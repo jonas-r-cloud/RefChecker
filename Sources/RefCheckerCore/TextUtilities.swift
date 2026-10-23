@@ -40,6 +40,19 @@ extension NSRegularExpression {
         matches(in: s, options: [], range: s.fullNSRange)
     }
 
+    /// The pieces of `s` between matches.
+    func split(_ s: String) -> [String] {
+        var pieces: [String] = []
+        var last = s.startIndex
+        for m in allMatches(in: s) {
+            guard let r = Range(m.range, in: s) else { continue }
+            pieces.append(String(s[last..<r.lowerBound]))
+            last = r.upperBound
+        }
+        pieces.append(String(s[last...]))
+        return pieces
+    }
+
     func replacing(in s: String, with template: String) -> String {
         stringByReplacingMatches(in: s, options: [], range: s.fullNSRange, withTemplate: template)
     }
