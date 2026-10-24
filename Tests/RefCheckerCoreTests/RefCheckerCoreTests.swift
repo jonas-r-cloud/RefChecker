@@ -407,3 +407,240 @@ final class BlankLineSplitTests: XCTestCase {
         XCTAssertEqual(ReferenceSplitter.split(formatted).map(\.text), original.map(\.text))
     }
 }
+
+final class ExtractionReportTests: XCTestCase {
+    func testCompleteNumberedList() {
+        let section = """
+        [1] A. Smith, “First paper,” in Proc. X, 2020.
+        [2] B. Jones, “Second paper,” Journal Y, 2021.
+        [3] C. Doe, “Third paper,” Journal Z, 2019.
+        """
+        let entries = ReferenceSplitter.split(section)
+        let report = ExtractionReport.analyze(section: section, entries: entries)
+        XCTAssertEqual(report.count, 3)
+        XCTAssertTrue(report.isComplete, "\(report.leftovers)")
+        XCTAssertEqual(report.numbering?.missing, [])
+        XCTAssertTrue(report.suspicious.isEmpty)
+    }
+
+    func testGapInNumberingIsReportedNotMerged() {
+        let section = """
+        [1] A. Smith, “First paper,” in Proc. X, 2020.
+        [2] B. Jones, “Second paper,” Journal Y, 2021.
+        [4] C. Doe, “Fourth paper,” Journal Z, 2019.
+        """
+        let entries = ReferenceSplitter.split(section)
+        XCTAssertEqual(entries.map(\.label), ["1", "2", "4"])
+        let report = ExtractionReport.analyze(section: section, entries: entries)
+        XCTAssertEqual(report.numbering?.missing, [3])
+        XCTAssertFalse(report.isComplete)
+    }
+
+    func testTextBeforeTheFirstReferenceIsALeftover() {
+        let section = """
+        Proceedings of Something, page header text
+        [1] A. Smith, “First paper,” in Proc. X, 2020.
+        [2] B. Jones, “Second paper,” Journal Y, 2021.
+        """
+        let report = ExtractionReport.analyze(section: section, entries: ReferenceSplitter.split(section))
+        XCTAssertEqual(report.leftovers.count, 1)
+    }
+
+    func testTwoReferencesRunTogetherAreFlagged() {
+        let entries = [ReferenceSplitter.Entry(label: "1", text: "Smith, J. (2020). Learning to rank. Journal of Testing, 12(3), 45–67. Doe, A. (2018). Third paper. Some Journal, 1, 2–3.")]
+        let report = ExtractionReport.analyze(section: entries[0].text, entries: entries)
+        XCTAssertEqual(report.suspicious.first?.label, "1")
+    }
+}
+
+final class CitationIndexTests: XCTestCase {
+    func testNumberedCitationsIncludingRangesAndPages() {
+        let refs = (1...4).map { ReferenceParser.parse("A. Author, “Paper \($0),” Journal, 2020.", label: "\($0)", id: $0 - 1) }
+        let body = "As shown in [1], and later [1, 3–4]. See also [2, p. 7]. A missing one [6]. Not a citation [sic]."
+        let index = CitationIndex.build(body: body, references: refs)
+        XCTAssertEqual(index.style, .numbered)
+        XCTAssertEqual(index.count(for: 0), 2)
+        XCTAssertEqual(index.count(for: 1), 1)
+        XCTAssertEqual(index.count(for: 2), 1)
+        XCTAssertEqual(index.count(for: 3), 1)
+        XCTAssertEqual(index.unknownNumbers, [6])
+    }
+
+    func testAuthorYearCitations() {
+        let refs = [
+            ReferenceParser.parse("Smith, J., & Doe, A. (2020). Learning to rank. Journal of Testing, 12(3), 45–67.", label: "1", id: 0),
+            ReferenceParser.parse("Jones, B. (2019). Another paper. Journal Y, 1, 1–2.", label: "2", id: 1),
+            ReferenceParser.parse("Leidner, D. E., & Tona, O. (2021). A Thought-Gear Model. JAIS, 22(4), 874–892.", label: "3", id: 2)
+        ]
+        let body = """
+        Smith and Doe (2020) argue … as others note (Jones, 2019; Smith & Doe, 2020).
+        Later, Smith et al. (2019) – a different year – and Jones (2020) are not these references.
+        """
+        let index = CitationIndex.build(body: body, references: refs)
+        XCTAssertEqual(index.style, .authorYear)
+        XCTAssertEqual(index.count(for: 0), 2)
+        XCTAssertEqual(index.count(for: 1), 1)
+        XCTAssertEqual(index.count(for: 2), 0)
+    }
+
+    func testBodyAndSectionAreSeparated() {
+        let paper = "Introduction\nAs [1] shows.\nReferences\n[1] A. Smith, “Paper,” 2020."
+        let parts = ReferenceSectionExtractor.split(paper)
+        XCTAssertEqual(parts?.body, "Introduction\nAs [1] shows.")
+        XCTAssertEqual(parts?.section, "[1] A. Smith, “Paper,” 2020.")
+    }
+}
+
+final class OptionsAndAISeLQueryTests: XCTestCase {
+    func testMissingArticleNumberCanBeAccepted() {
+        let ref = ReferenceParser.parse("Sheng, L. (2024). A novel integration strategy. Expert Systems with Applications, 243.", label: "1", id: 0)
+        let meta = RetrievedMetadata(provider: "Crossref", title: "A novel integration strategy",
+                                     authors: [Author(given: "Lei", family: "Sheng")], year: "2024",
+                                     venue: "Expert Systems with Applications", volume: "243")
+        var m = meta
+        m.articleNumber = "122886"
+        let strict = Comparator.compare(ref, with: m).fields.first { $0.field == "Article no." }
+        XCTAssertEqual(strict?.status, .missing)
+        let lenient = Comparator.compare(ref, with: m, options: ComparisonOptions(requireArticleNumber: false)).fields
+        XCTAssertNil(lenient.first { $0.field == "Article no." })
+    }
+
+    func testConferenceReferenceWithoutLinkIsRecognisedAndSearchable() {
+        let ref = ReferenceParser.parse("Smith, J. (2019). Digital nudging. In Proceedings of the 27th European Conference on Information Systems, Stockholm.",
+                                        label: "1", id: 0)
+        XCTAssertTrue(AISeLProvider.mentionsAIS(ref))
+        XCTAssertEqual(AISeLProvider.query(for: ref), "Digital nudging")
+        let journal = ReferenceParser.parse("Leidner, D. E., & Tona, O. (2021). A Thought-Gear Model of Theorizing from Literature. Journal of the Association for Information Systems, 22(4), 874–892.",
+                                            label: "2", id: 1)
+        XCTAssertFalse(AISeLProvider.mentionsAIS(journal), "journal references are not conference searches")
+    }
+
+    func testSearchEngineRedirectLinksAreUnwrapped() {
+        let html = #"<a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Faisel.aisnet.org%2Fecis2019_rp%2F12%2F&rut=x">"#
+        XCTAssertEqual(AISeLProvider.paperLinks(inSearchPage: AISeLProvider.decodeRedirects(html)),
+                       ["https://aisel.aisnet.org/ecis2019_rp/12/"])
+    }
+}
+
+final class UncitedIsIssueTests: XCTestCase {
+    func testUncitedReferenceBecomesAnIssue() {
+        let refs = (1...2).map { ReferenceParser.parse("A. Author, “Paper \($0),” Journal, 2020.", label: "\($0)", id: $0 - 1) }
+        let index = CitationIndex.build(body: "Only [1] is cited.", references: refs)
+        XCTAssertEqual(index.adjusted(.verified, for: 0), .verified)
+        XCTAssertEqual(index.adjusted(.verified, for: 1), .issues(1))
+        XCTAssertEqual(index.adjusted(.needsReview(2), for: 1), .issues(1))
+        XCTAssertEqual(index.adjusted(.issues(2), for: 1), .issues(3))
+        XCTAssertEqual(index.adjusted(.notFound, for: 1), .notFound)
+
+        let results = Dictionary(uniqueKeysWithValues: refs.map {
+            ($0.id, ReferenceResult(reference: $0, metadata: nil, fields: [], highlights: [], verdict: .verified, notes: []))
+        })
+        let html = HTMLReport.render(references: refs, results: results, source: nil, citations: index)
+        XCTAssertTrue(html.contains("1 verified"))
+        XCTAssertTrue(html.contains("1 with issues"))
+        XCTAssertTrue(html.contains("Not cited in text (issue)"))
+    }
+}
+
+final class JournalAbbreviationTests: XCTestCase {
+    func testISO4Abbreviations() {
+        XCTAssertEqual(ISO4.abbreviate("Expert Systems with Applications"), "Expert Syst. Appl.")
+        XCTAssertEqual(ISO4.abbreviate("Journal of the Association for Information Systems"), "J. Assoc. Inf. Syst.")
+        XCTAssertEqual(ISO4.abbreviate("MIS Quarterly"), "MIS Q.")
+        XCTAssertEqual(ISO4.abbreviate("Information and Organization"), "Inf. Organ.")
+        XCTAssertEqual(ISO4.abbreviate("Information Systems Research"), "Inf. Syst. Res.")
+        XCTAssertEqual(ISO4.abbreviate("Decision Support Systems"), "Decis. Support Syst.")
+        XCTAssertEqual(ISO4.abbreviate("International Journal of Human-Computer Studies"), "Int. J. Hum.-Comput. Stud.")
+        XCTAssertNil(ISO4.abbreviate("Nature"), "single-word titles are not abbreviated")
+    }
+
+    func venueStatus(_ reference: String, venue: String, official: [VenueAbbreviation] = []) -> FieldComparison? {
+        let ref = ReferenceParser.parse(reference, label: "1", id: 0)
+        var meta = RetrievedMetadata(provider: "Crossref", title: "A novel integration strategy",
+                                     authors: [Author(given: "Lei", family: "Sheng")], year: "2024", venue: venue)
+        meta.venueAbbreviations = official
+        return Comparator.compare(ref, with: meta).fields.first { $0.field == "Venue" }
+    }
+
+    func testOfficialAbbreviationIsGreen() {
+        let f = venueStatus("Sheng, L. (2024). A novel integration strategy. Expert Syst. Appl., 243, 122886.",
+                            venue: "Expert Systems with Applications",
+                            official: [VenueAbbreviation("Expert Syst. Appl.", .crossref)])
+        XCTAssertEqual(f?.status, .match)
+        XCTAssertTrue(f?.note?.contains("Crossref short title") == true)
+    }
+
+    func testNLMStyleWithoutFullStopsMatches() {
+        let f = venueStatus("Sheng L. A novel integration strategy. Expert Syst Appl. 2024;243:122886.",
+                            venue: "Expert Systems with Applications",
+                            official: [VenueAbbreviation("Expert Syst Appl", .nlm)])
+        XCTAssertEqual(f?.status, .match)
+    }
+
+    func testGeneratedISO4AbbreviationIsAmber() {
+        let f = venueStatus("Sheng, L. (2024). A novel integration strategy. Expert Syst. Appl., 243, 122886.",
+                            venue: "Expert Systems with Applications")
+        XCTAssertEqual(f?.status, .unconfirmed)
+        XCTAssertTrue(f?.note?.contains("ISO 4") == true)
+    }
+
+    func testAbbreviationMustNotMatchInsideALongerOne() {
+        // "Inf. Syst." (Information Systems) must not match "Inf. Syst. Res." (Information Systems Research).
+        let f = venueStatus("Sheng, L. (2024). A novel integration strategy. Inf. Syst. Res., 35(3), 100–120.",
+                            venue: "Information Systems",
+                            official: [VenueAbbreviation("Inf. Syst.", .issn)])
+        XCTAssertNotEqual(f?.status, .match)
+        XCTAssertNotEqual(f?.status, .unconfirmed)
+    }
+}
+
+final class LinksAreNotVenuesTests: XCTestCase {
+    let amr = "Samantha A. Conroy and Anne M. O’Leary-Kelly. 2014. Letting Go and Moving On: Work-Related Identity Loss and Recovery. Acad. Manage. Rev. 39, 1 (January 2014), 67–87. https://doi.org/10.5465/amr.2011.0396"
+
+    func meta(_ abbreviations: [VenueAbbreviation]) -> RetrievedMetadata {
+        var m = RetrievedMetadata(provider: "doi.org", title: "Letting Go and Moving On: Work-Related Identity Loss and Recovery",
+                                  authors: [Author(given: "Samantha A.", family: "Conroy"), Author(given: "Anne M.", family: "O'Leary-Kelly")],
+                                  year: "2014", venue: "Academy of Management Review", volume: "39", issue: "1", pages: "67-87",
+                                  doi: "10.5465/amr.2011.0396")
+        m.venueAbbreviations = abbreviations
+        return m
+    }
+
+    func testDOIIsNotTakenForTheVenue() {
+        let ref = ReferenceParser.parse(amr, label: "16", id: 0)
+        let venue = Comparator.compare(ref, with: meta([VenueAbbreviation("AMR", .crossref)])).fields.first { $0.field == "Venue" }
+        // "amr" in the DOI must not count; the earlier-LTWA form "Acad. Manage. Rev." is found instead (generated → amber).
+        XCTAssertEqual(venue?.original, "Acad. Manage. Rev")
+        XCTAssertEqual(venue?.status, .unconfirmed)
+        // The DOI itself is still compared.
+        XCTAssertEqual(Comparator.compare(ref, with: meta([])).fields.first { $0.field == "DOI" }?.status, .match)
+    }
+
+    func testISSNRegisterAbbreviationMakesItGreen() {
+        let ref = ReferenceParser.parse(amr, label: "16", id: 0)
+        let venue = Comparator.compare(ref, with: meta([VenueAbbreviation("Acad. Manage. Rev.", .issn)])).fields.first { $0.field == "Venue" }
+        XCTAssertEqual(venue?.status, .match)
+    }
+
+    func testISO4Variants() {
+        XCTAssertEqual(ISO4.variants("Academy of Management Review"), ["Acad. Manag. Rev.", "Acad. Manage. Rev."])
+    }
+
+    func testAISeLLinkIsNotTakenForTheConference() {
+        let ref = ReferenceParser.parse("Smith, J. (2020). Digital nudging. In Proceedings of the European Conference on Information Systems. https://aisel.aisnet.org/icis2020/track/3/",
+                                        label: "1", id: 0)
+        let m = RetrievedMetadata(provider: "AIS eLibrary", title: "Digital nudging", authors: [Author(given: "John", family: "Smith")],
+                                  year: "2020", venue: "International Conference on Information Systems (ICIS 2020)",
+                                  venueAliases: ["ICIS 2020 Proceedings", "ICIS 2020", "International Conference on Information Systems", "ICIS"])
+        let venue = Comparator.compare(ref, with: m).fields.first { $0.field == "Venue" }
+        XCTAssertEqual(venue?.status, .mismatch, "the reference names ECIS; icis2020 in the link must not count")
+    }
+
+    func testMaskingKeepsOffsets() {
+        let raw = "Title. J. Test. https://doi.org/10.1/abc.123 end"
+        let text = Comparator.matchingText(raw)
+        XCTAssertEqual(text.characters.count, raw.count)
+        XCTAssertNil(text.findWords("abc"))
+        XCTAssertNotNil(text.findWords("end"))
+    }
+}

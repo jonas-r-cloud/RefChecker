@@ -100,6 +100,7 @@ final class SectionTextController: ObservableObject {
 struct SectionTextView: NSViewRepresentable {
     @Binding var text: String
     let controller: SectionTextController
+    var fontSize: Double = TextSize.referenceListDefault
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -122,7 +123,8 @@ struct SectionTextView: NSViewRepresentable {
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.string = text
-        Self.applyStyle(textView)
+        Self.applyStyle(textView, fontSize: fontSize)
+        context.coordinator.fontSize = fontSize
         textView.delegate = context.coordinator
 
         let scrollView = NSScrollView()
@@ -138,9 +140,10 @@ struct SectionTextView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.parent = self
         controller.textView = textView
-        if textView.string != text {
-            textView.string = text
-            Self.applyStyle(textView)
+        if textView.string != text || context.coordinator.fontSize != fontSize {
+            if textView.string != text { textView.string = text }
+            Self.applyStyle(textView, fontSize: fontSize)
+            context.coordinator.fontSize = fontSize
             // Defer: publishing from inside a view update is not allowed.
             Task { @MainActor in controller.updateSearch(selectFirst: false) }
         }
@@ -157,13 +160,15 @@ struct SectionTextView: NSViewRepresentable {
     }()
 
     @MainActor
-    static func applyStyle(_ textView: NSTextView) {
+    static func applyStyle(_ textView: NSTextView, fontSize: Double) {
+        let style = (paragraphStyle.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+        style.headIndent = 20 * fontSize / TextSize.referenceListDefault
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12),
-            .paragraphStyle: paragraphStyle,
+            .font: NSFont.systemFont(ofSize: fontSize),
+            .paragraphStyle: style,
             .foregroundColor: NSColor.textColor
         ]
-        textView.defaultParagraphStyle = paragraphStyle
+        textView.defaultParagraphStyle = style
         textView.typingAttributes = attributes
         if let storage = textView.textStorage {
             storage.setAttributes(attributes, range: NSRange(location: 0, length: storage.length))
@@ -172,6 +177,7 @@ struct SectionTextView: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: SectionTextView
+        var fontSize = 0.0
 
         init(_ parent: SectionTextView) { self.parent = parent }
 

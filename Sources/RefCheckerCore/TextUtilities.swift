@@ -151,11 +151,11 @@ public struct NormalizedText: Sendable {
         String(characters[range.clamped(to: 0..<characters.count)])
     }
 
-    /// Finds `needle` ignoring case, accents, punctuation and spacing.
-    public func find(_ needle: String) -> Range<Int>? {
+    /// Finds `needle` ignoring case, accents, punctuation and spacing, starting at character `from`.
+    public func find(_ needle: String, from: Int = 0) -> Range<Int>? {
         let k = Array(NormalizedText.key(needle))
         guard !k.isEmpty, k.count <= folded.count else { return nil }
-        var i = 0
+        var i = from == 0 ? 0 : (map.firstIndex { $0 >= from } ?? folded.count)
         while i + k.count <= folded.count {
             if folded[i] == k[0] {
                 var j = 1
@@ -173,7 +173,7 @@ public struct NormalizedText: Sendable {
         guard !k.isEmpty else { return nil }
         for i in tokens.indices {
             var acc = ""
-            for j in i..<min(i + 5, tokens.count) {
+            for j in i..<min(i + 12, tokens.count) {
                 acc += tokens[j].key
                 if acc == k { return tokens[i].range.lowerBound..<tokens[j].range.upperBound }
                 if acc.count >= k.count || !k.hasPrefix(acc) { break }

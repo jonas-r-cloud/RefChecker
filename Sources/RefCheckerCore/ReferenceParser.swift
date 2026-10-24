@@ -22,14 +22,21 @@ public enum ReferenceSectionExtractor {
 
     /// Returns the text following the last "References"-type heading, or nil.
     public static func extract(from text: String) -> String? {
+        split(text)?.section
+    }
+
+    /// Splits a paper into its body (everything before the reference list, used to count
+    /// citations) and the reference list itself.
+    public static func split(_ text: String) -> (body: String, section: String)? {
         let lines = text.components(separatedBy: .newlines)
         guard let start = lines.lastIndex(where: isHeading) else { return nil }
-        var body = Array(lines[(start + 1)...])
-        if let end = body.firstIndex(where: { $0.trimmed.count < 60 && endRx.firstMatch(in: $0.trimmed) != nil }) {
-            body = Array(body[..<end])
+        var list = Array(lines[(start + 1)...])
+        if let end = list.firstIndex(where: { $0.trimmed.count < 60 && endRx.firstMatch(in: $0.trimmed) != nil }) {
+            list = Array(list[..<end])
         }
-        let section = body.joined(separator: "\n").trimmed
-        return section.isEmpty ? nil : section
+        let section = list.joined(separator: "\n").trimmed
+        guard !section.isEmpty else { return nil }
+        return (lines[..<start].joined(separator: "\n"), section)
     }
 }
 
@@ -86,15 +93,23 @@ public enum ReferenceSplitter {
         var markers: [(label: String, range: Range<String.Index>)] = []
         var searchFrom = text.startIndex
         var n = 1
-        while searchFrom < text.endIndex {
+        func marker(_ n: Int) -> Range<String.Index>? {
             let pattern = bracketed ? "\\[\(n)\\]" : "(?m)^[ \\t]*\(n)[.)]?[ \\t]+(?=\\S)"
-            let rx = NSRegularExpression(pattern)
-            guard let m = rx.firstMatch(in: text, options: [], range: NSRange(searchFrom..<text.endIndex, in: text)),
-                  let r = Range(m.range, in: text) else { break }
-            if n == 1 && text.distance(from: text.startIndex, to: r.lowerBound) > 300 { return nil }
-            markers.append((String(n), r))
+            guard let m = NSRegularExpression(pattern).firstMatch(in: text, options: [],
+                                                                  range: NSRange(searchFrom..<text.endIndex, in: text))
+            else { return nil }
+            return Range(m.range, in: text)
+        }
+        while searchFrom < text.endIndex {
+            // A missing number (e.g. "[7]" lost in extraction) must not merge the rest of the list:
+            // step over up to three missing numbers; the extraction check reports the gap.
+            guard let hit = (0...(n == 1 ? 0 : 3)).lazy.compactMap({ skip in marker(n + skip).map { (n + skip, $0) } }).first
+            else { break }
+            let (found, r) = hit
+            if found == 1 && text.distance(from: text.startIndex, to: r.lowerBound) > 300 { return nil }
+            markers.append((String(found), r))
             searchFrom = r.upperBound
-            n += 1
+            n = found + 1
         }
         guard markers.count >= 2 else { return nil }
         return entries(from: markers, in: text)

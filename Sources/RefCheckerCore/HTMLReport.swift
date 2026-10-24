@@ -3,12 +3,16 @@ import Foundation
 /// Printable side-by-side report.
 public enum HTMLReport {
     public static func render(references: [ParsedReference], results: [Int: ReferenceResult],
-                              source: String?, resolutions: [Int: Resolution] = [:], date: Date = Date()) -> String {
+                              source: String?, resolutions: [Int: Resolution] = [:],
+                              citations: CitationIndex? = nil,
+                              date: Date = Date()) -> String {
         let checked = references.compactMap { results[$0.id] }
         // A reference resolved by the user counts as verified.
-        func effective(_ r: ReferenceResult) -> Verdict { resolutions[r.id] != nil ? .verified : r.verdict }
+        // Uncited references count as an issue; a reference resolved by the user counts as verified.
+        func automatic(_ r: ReferenceResult) -> Verdict { citations?.adjusted(r.verdict, for: r.id) ?? r.verdict }
+        func effective(_ r: ReferenceResult) -> Verdict { resolutions[r.id] != nil ? .verified : automatic(r) }
         func count(_ test: (Verdict) -> Bool) -> Int { checked.filter { test(effective($0)) }.count }
-        let resolvedCount = checked.filter { resolutions[$0.id] != nil && $0.verdict != .verified }.count
+        let resolvedCount = checked.filter { resolutions[$0.id] != nil && automatic($0) != .verified }.count
         let verified = count { $0 == .verified }
         let review = count { if case .needsReview = $0 { return true }; return false }
         let withIssues = count { if case .issues = $0 { return true }; return false }
@@ -69,12 +73,13 @@ public enum HTMLReport {
 
         for ref in references {
             let result = results[ref.id]
-            let resolution = result.flatMap { $0.verdict != .verified ? resolutions[ref.id] : nil }
+            let verdict = result.map(automatic)
+            let resolution = result.flatMap { automatic($0) != .verified ? resolutions[ref.id] : nil }
             let (cls, badge, badgeClass): (String, String, String) = {
-                if let result, resolution != nil {
-                    return ("verified", "Resolved manually (was: \(result.verdict.title))", "ok")
+                if let verdict, resolution != nil {
+                    return ("verified", "Resolved manually (was: \(verdict.title))", "ok")
                 }
-                switch result?.verdict {
+                switch verdict {
                 case .verified?: return ("verified", "Verified", "ok")
                 case .needsReview(let n)?: return ("review", n == 1 ? "1 field unconfirmed" : "\(n) fields unconfirmed", "warn")
                 case .issues(let n)?: return ("issues", n == 1 ? "1 issue" : "\(n) issues", "bad")
@@ -85,6 +90,10 @@ public enum HTMLReport {
             }()
             html += "<div class=\"ref \(cls)\"><div class=\"head\"><span class=\"label\">[\(escape(ref.label))]</span>"
             html += "<span class=\"badge \(badgeClass)\">\(badge)</span>"
+            if let citations {
+                let n = citations.count(for: ref.id)
+                html += "<span class=\"badge \(n == 0 ? "bad" : "na")\">\(n == 0 ? "Not cited in text (issue)" : "Cited \(n)× in text")</span>"
+            }
             if let m = result?.metadata {
                 html += "<span class=\"src\">Record: \(escape(m.provider)) (\(escape(m.authority.label)))"
                 if let link = m.doi.map({ "https://doi.org/\($0)" }) ?? m.url {

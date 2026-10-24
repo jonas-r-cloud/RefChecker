@@ -8,15 +8,19 @@ public struct CheckerConfiguration: Hashable, Sendable {
     public var useOpenAlex: Bool
     /// Resolve AIS conference papers (ICIS, ECIS, AMCIS, PACIS, WI, …) at aisel.aisnet.org.
     public var useAISeL: Bool
+    /// Look up journal abbreviations in the NLM Catalog when the full journal name is not in the reference.
+    public var useNLM: Bool
     public var options: ComparisonOptions
 
     public init(contactEmail: String? = nil, useCrossref: Bool = true, useDBLP: Bool = true,
-                useOpenAlex: Bool = true, useAISeL: Bool = true, options: ComparisonOptions = ComparisonOptions()) {
+                useOpenAlex: Bool = true, useAISeL: Bool = true, useNLM: Bool = true,
+                options: ComparisonOptions = ComparisonOptions()) {
         self.contactEmail = contactEmail?.nilIfEmpty
         self.useCrossref = useCrossref
         self.useDBLP = useDBLP
         self.useOpenAlex = useOpenAlex
         self.useAISeL = useAISeL
+        self.useNLM = useNLM
         self.options = options
     }
 }
@@ -33,6 +37,8 @@ public final class ReferenceChecker: Sendable {
     private let doiResolver: DOIResolver
     private let providers: [any MetadataProvider]
     private let aisel: AISeLProvider?
+    private let nlm: NLMCatalog?
+    private let openAlex: OpenAlexProvider?
 
     public init(configuration: CheckerConfiguration) {
         self.configuration = configuration
@@ -45,6 +51,8 @@ public final class ReferenceChecker: Sendable {
         if configuration.useOpenAlex { providers.append(OpenAlexProvider(http: http, mailto: mail)) }
         self.providers = providers
         self.aisel = configuration.useAISeL ? AISeLProvider(http: http) : nil
+        self.nlm = configuration.useNLM ? NLMCatalog(http: http) : nil
+        self.openAlex = configuration.useOpenAlex ? OpenAlexProvider(http: http, mailto: mail) : nil
     }
 
     private struct Search {
@@ -58,7 +66,7 @@ public final class ReferenceChecker: Sendable {
 
         init(_ ref: ParsedReference) {
             self.ref = ref
-            self.text = NormalizedText(ref.raw)
+            self.text = Comparator.matchingText(ref.raw)
         }
 
         func score(_ m: RetrievedMetadata) -> Comparator.Score {
@@ -124,16 +132,17 @@ public final class ReferenceChecker: Sendable {
         }
 
         var notes = search.notes
-        let comparison = Comparator.compare(ref, with: match.meta, options: configuration.options)
         let others = corroborating(search, excluding: match.meta)
-        let fields = comparison.fields.map { confirm($0, match.meta, others, identification, ref) }
+        let meta = await withJournalAbbreviations(match.meta, others: others, text: search.text)
+        let comparison = Comparator.compare(ref, with: meta, options: configuration.options)
+        let fields = comparison.fields.map { confirm($0, meta, others, identification, ref) }
         let highlights = comparison.highlights.map { h -> Highlight in
             // Text highlights follow the field decision: nothing unconfirmed is shown green.
             let fieldStatus = fields.first { $0.field == h.field }?.status
             guard h.status == .match, identification.level == .probable || fieldStatus == .unconfirmed else { return h }
             return Highlight(h.start..<h.end, .unconfirmed, field: h.field)
         }
-        if let given = ref.doi, let found = match.meta.doi, given.lowercased() != found.lowercased(),
+        if let given = ref.doi, let found = meta.doi, given.lowercased() != found.lowercased(),
            !notes.contains(where: { $0.contains(given) }) {
             notes.append("The DOI in the reference points to a different record than the best match.")
         }
@@ -143,11 +152,39 @@ public final class ReferenceChecker: Sendable {
         let consulted = (ref.doi != nil ? ["doi.org"] : []) + search.queried.sorted()
             + (search.seen.contains { $0.provider == AISeLProvider.name } ? [AISeLProvider.name] : [])
         let sources = consulted.map { name in
-            (name: name, found: name == match.meta.provider || others.contains { $0.provider == name })
+            (name: name, found: name == meta.provider || others.contains { $0.provider == name })
         }
-        return ReferenceResult(reference: ref, metadata: match.meta, identification: identification, sources: sources,
+        return ReferenceResult(reference: ref, metadata: meta, identification: identification, sources: sources,
                                fields: fields, highlights: Comparator.removeOverlaps(highlights),
                                verdict: verdict, notes: notes)
+    }
+
+    /// Adds the journal's short forms known from the other sources of the same work and, when the
+    /// journal name itself is not in the reference, from the NLM Catalog.
+    private func withJournalAbbreviations(_ record: RetrievedMetadata, others: [RetrievedMetadata],
+                                          text: NormalizedText) async -> RetrievedMetadata {
+        var meta = record
+        guard let venue = meta.venue, !meta.isBook else { return meta }
+        func add(_ abbreviations: [VenueAbbreviation]) {
+            for a in abbreviations where !meta.venueAbbreviations.contains(where: { NormalizedText.key($0.name) == NormalizedText.key(a.name) }) {
+                meta.venueAbbreviations.append(a)
+            }
+        }
+        let sameJournal = others.filter { $0.venue.map { NormalizedText.key($0) == NormalizedText.key(venue) } ?? false }
+        add(sameJournal.flatMap(\.venueAbbreviations))
+        func named() -> Bool {
+            ([venue] + meta.venueAliases).contains { text.find($0) != nil }
+                || meta.venueAbbreviations.contains { Comparator.findAbbreviation($0.name, in: text) != nil }
+        }
+        let issn = Array(Set(meta.issn + sameJournal.flatMap(\.issn))).sorted()
+        // The ISSN register (via OpenAlex), then the NLM Catalog – only while the reference's form is still unexplained.
+        if let openAlex, !named(), !issn.isEmpty, !meta.venueAbbreviations.contains(where: { $0.source == .issn }) {
+            add(await openAlex.journalAbbreviations(issn: issn).map { VenueAbbreviation($0, .issn) })
+        }
+        if let nlm, !named() {
+            add(await nlm.abbreviations(journal: venue, issn: issn).map { VenueAbbreviation($0, .nlm) })
+        }
+        return meta
     }
 
     /// How certain it is that `match` is the work the reference means.
@@ -273,7 +310,9 @@ public final class ReferenceChecker: Sendable {
         func links(_ s: Search) -> [String] {
             (AISeLProvider.urls(in: s.ref) + s.seen.flatMap(\.links)).filter(AISeLProvider.isAISeLURL)
         }
+        var routes: [String] = []
         var record = await firstAcceptableRecord(aisel, links(search), &tried, search)
+        routes.append("AISeL links in the reference or other records: \(tried.isEmpty ? "none" : "\(tried.count) tried")")
 
         // 2. DBLP and OpenAlex usually link conference papers to their AISeL page.
         if record == nil {
@@ -282,19 +321,27 @@ public final class ReferenceChecker: Sendable {
                 record = await firstAcceptableRecord(aisel, links(search), &tried, search)
                 if record != nil { break }
             }
+            routes.append("AISeL links from DBLP/OpenAlex: \(record == nil ? "none usable" : "found")")
         }
 
-        // 3. The AISeL site search.
+        // 3. Searching: AISeL site search, then a web search restricted to aisel.aisnet.org.
         if record == nil {
             do {
-                let hits = try await aisel.search(search.ref)
-                record = hits.map { ($0, search.score($0)) }.filter { $0.1.isAcceptable }.max { $0.1 < $1.1 }?.0
+                let result = try await aisel.search(search.ref)
+                routes += result.routes
+                record = result.records.map { ($0, search.score($0)) }.filter { $0.1.isAcceptable }.max { $0.1 < $1.1 }?.0
+                if record == nil, !result.records.isEmpty {
+                    routes.append("\(result.records.count) AISeL page(s) found, none matching the reference")
+                }
             } catch {
                 search.errors.append("\(AISeLProvider.name): \(error.localizedDescription)")
             }
         }
 
         guard let record else {
+            if AISeLProvider.mentionsAIS(search.ref) {
+                search.notes.append("AIS eLibrary searched without success – " + routes.joined(separator: "; ") + ".")
+            }
             if let prev = previous?.meta, AISeLProvider.mentionsAIS(search.ref), AISeLProvider.hasAISVenue(prev),
                let venue = prev.venue, search.text.find(venue) == nil {
                 search.notes.append("\(prev.provider) attributes this paper to “\(venue)”. AIS conference papers are sometimes filed under an AIS journal there – the AIS eLibrary page could not be found to verify the venue.")

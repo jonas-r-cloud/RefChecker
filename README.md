@@ -1,5 +1,7 @@
 # RefChecker
 
+<img src="/RefChecker.png">
+
 A macOS app that checks whether the references of a research paper are **correct** and **complete**.
 
 1. **Parse** – opens a PDF (or text file) and removes running headers, footers, page numbers and publisher stamps
@@ -72,6 +74,31 @@ together, put the cursor between them, press Return twice, and choose *Split int
 list, the split-off part gets the label of its predecessor plus a letter ("12b"). If no "References" heading was found,
 the full text is left as it is until you split it.
 
+### Is every reference extracted?
+
+After splitting, the list is checked for completeness: every piece of its text belongs to a reference, numbered lists
+have no gaps or duplicates, and no entry looks like two references run together or like a fragment. A missing number
+does not merge the rest of the list into one reference; the splitter steps over up to three missing numbers. When
+something looks wrong, the line under the reference list reads *N references – check the split* in orange; hover
+over it for the details.
+
+### Citations in the text
+
+When you open the whole paper, the text before the reference list is searched for citations. Every card shows
+**Cited n×** (or **Not cited in text** in orange); click it to see each passage. Numbered papers are matched by
+`[3]`, `[2, 5–7]`, `[4, p. 12]`. Author–year papers are matched by the first author's family name followed by the
+year within the same citation: "Smith et al. (2020)", "(Smith & Doe, 2020; Jones, 2019)". Suffixes such as 2020a are
+respected. For a pasted reference list there is no text to search, and the counts are not shown.
+
+**A reference that is never cited in the text counts as an issue**: the card's verdict gains an issue, the citation
+badge turns red, and the reference appears under *with issues*. If the citation is written in a form the app does not
+recognise, use *Resolve*.
+
+### Starting over
+
+**Reset All** (toolbar, top right) removes the paper, the reference list, all results and the browser page, after a
+confirmation. Settings and the references you marked as resolved are kept.
+
 ### Filtering the results
 
 The summary pills (*verified*, *to review*, *with issues*, *not found*) are filters: click one to show only those
@@ -99,6 +126,8 @@ history stay when you hide the pane.
 - Enable or disable Crossref / DBLP / OpenAlex.
 - Contact e-mail: optional. Crossref and OpenAlex route requests that include one to their faster "polite pool".
 - Whether a missing DOI counts as an issue, and whether volume/issue/pages are compared.
+- Whether a missing article number counts as an issue (an article number that is given is always compared).
+- Text size of the reference list and of the results panel (*Text size*).
 - Number of parallel lookups (default 3; keep it low to respect the APIs' rate limits).
 
 ## AIS conference papers (ICIS, ECIS, AMCIS, PACIS, WI, …)
@@ -134,6 +163,12 @@ author data is curated.
 ("Dorothy E. Leidner, Baylor University, USA, Olgerta Tona, …"), the Authors field is red with *The reference lists
 affiliations as authors: "Baylor University, USA", … – remove them*, and those passages are highlighted red. A corporate
 author standing alone (e.g. "American Psychological Association") is not flagged.
+
+AISeL is also searched for any reference to a conference on information systems that has **no link**
+("…European Conference on Information Systems…", ICIS, ECIS, AMCIS, PACIS, WI, ACIS, MCIS, UKAIS, Bled, …). The routes, in
+order: AISeL links in DBLP/OpenAlex records, the AISeL site search (title phrase, then plain words), and a web search
+restricted to aisel.aisnet.org. If the parsed title is unusable, the longest sentence of the reference is used. When
+nothing is found, the card lists every route tried and its result.
 
 AISeL is consulted when
 - the reference names an AIS conference or AISeL,
@@ -181,6 +216,32 @@ or more digits, or of the form `e1234`, counts as an article number, not a page.
 volume or issue or a marker like "Article"/"Art. No.", and the volume counts as placed when an issue, article number
 or first page follows it.
 
+## Journal abbreviations
+
+If the reference does not contain the journal's full name, RefChecker looks for its abbreviation:
+
+1. **Official short forms:** the Crossref short title, the ISSN register's abbreviated key title (via OpenAlex), and,
+   when the full name is missing, the **NLM Catalog** (MEDLINE abbreviation and ISO abbreviation, looked up by ISSN or
+   exact title and cached per journal). A match is as good as the full name and can be green.
+2. **ISO 4:** RefChecker abbreviates the full name by the ISO 4 rules (articles, prepositions and conjunctions dropped,
+   subtitles omitted, single-word titles unabbreviated, words abbreviated by the LTWA), e.g. *Expert Systems with
+   Applications* → *Expert Syst. Appl.* and *Journal of the Association for Information Systems* → *J. Assoc. Inf.
+   Syst.* Only the LTWA entries common in scholarly titles are built in. A match on this generated form is **amber**,
+   because no official list confirms it.
+
+Besides the current ISO 4 form, variants with earlier LTWA abbreviations that are still widely used are tried, e.g.
+*Acad. Manag. Rev.* and *Acad. Manage. Rev.* for *Academy of Management Review*. When a record has an ISSN, the ISSN
+register's abbreviated key title is fetched from OpenAlex if the reference's form is not yet explained.
+
+DOIs and URLs are never taken for a venue, title, author or number: before fields are matched they are blanked out,
+so "amr" in `10.5465/amr.2011.0396` or "icis2020" in an AISeL link does not count. The DOI field is still checked.
+
+Full stops and spacing are ignored, so the NLM style (*Expert Syst Appl*) matches too. An abbreviation must stand on its
+own: it has to be followed by a number, volume/issue/page wording, a DOI/URL or the end of the reference, and it must
+not continue a longer abbreviation. So *Inf. Syst.* (Information Systems) does not match *Inf. Syst. Res.*
+(Information Systems Research). The Venue row names the abbreviation and its source, and lists the abbreviations
+tried when none matched. The NLM lookup can be switched off in Settings.
+
 ## How matching works
 
 | Field | Green when … |
@@ -217,6 +278,8 @@ Sources/RefCheckerCore/      platform-independent logic
   PageCleaner.swift          header/footer removal for PDF text
   AISeL.swift                AIS eLibrary landing pages, conference detection
   Affiliations.swift         separating affiliations listed as authors
+  ISO4.swift                 ISO 4 / LTWA journal title abbreviation
+  NLMCatalog.swift           NLM Catalog abbreviation lookup
   ReferenceChecker.swift     lookup strategy per reference
   HTMLReport.swift           printable side-by-side report
   Models.swift, TextUtilities.swift

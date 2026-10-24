@@ -10,8 +10,12 @@ enum SettingsKey {
     static let useDBLP = "useDBLP"
     static let useOpenAlex = "useOpenAlex"
     static let useAISeL = "useAISeL"
+    static let useNLM = "useNLM"
     static let requireDOI = "requireDOI"
     static let checkVolumeIssuePages = "checkVolumeIssuePages"
+    static let requireArticleNumber = "requireArticleNumber"
+    static let referenceListFontSize = "referenceListFontSize"
+    static let reportFontSize = "reportFontSize"
     static let parallelRequests = "parallelRequests"
 }
 
@@ -25,6 +29,12 @@ final class AppModel: ObservableObject {
     @Published var isChecking = false
     @Published var notice: String?
     @Published var removedLines: [String] = []
+    /// The paper's text before the reference list (only when a whole paper was opened).
+    @Published var bodyText: String?
+    /// Evidence that the reference list was split completely.
+    @Published var extraction: ExtractionReport?
+    /// How often each reference is cited in `bodyText`.
+    @Published var citations: CitationIndex?
     @Published var errorMessage: String?
     @Published var showBrowser = false
     /// The reference whose website is shown in the browser pane.
@@ -57,11 +67,13 @@ final class AppModel: ObservableObject {
             let text = extracted.text
             removedLines = extracted.removed
             sourceName = url.lastPathComponent
-            if let section = ReferenceSectionExtractor.extract(from: text) {
-                sectionText = section
+            if let parts = ReferenceSectionExtractor.split(text) {
+                sectionText = parts.section
+                bodyText = parts.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : parts.body
                 notice = nil
             } else {
                 sectionText = text
+                bodyText = nil
                 notice = "No “References” heading was found, so the whole text is shown. Delete everything except the reference list and choose “Split into References”."
             }
             // Without a "References" heading the whole paper is shown; leave it as is for trimming.
@@ -78,6 +90,8 @@ final class AppModel: ObservableObject {
         let entries = ReferenceSplitter.split(sectionText)
         references = ReferenceParser.parse(entries: entries)
         results = [:]
+        extraction = entries.isEmpty ? nil : ExtractionReport.analyze(section: sectionText, entries: entries)
+        citations = bodyText.map { CitationIndex.build(body: $0, references: references) }
         if reformat, !entries.isEmpty {
             sectionText = ReferenceSplitter.format(entries)
         }
@@ -140,8 +154,10 @@ final class AppModel: ObservableObject {
             useDBLP: flag(SettingsKey.useDBLP),
             useOpenAlex: flag(SettingsKey.useOpenAlex),
             useAISeL: flag(SettingsKey.useAISeL),
+            useNLM: flag(SettingsKey.useNLM),
             options: ComparisonOptions(requireDOI: flag(SettingsKey.requireDOI),
-                                       checkVolumeIssuePages: flag(SettingsKey.checkVolumeIssuePages)))
+                                       checkVolumeIssuePages: flag(SettingsKey.checkVolumeIssuePages),
+                                       requireArticleNumber: flag(SettingsKey.requireArticleNumber)))
     }
 
     // MARK: Browser & navigation
@@ -176,7 +192,7 @@ final class AppModel: ObservableObject {
 
     var verifiedCount: Int { effectiveVerdicts.filter { $0 == .verified }.count }
     var resolvedCount: Int {
-        references.filter { resolution(for: $0) != nil && results[$0.id].map { $0.verdict != .verified } == true }.count
+        references.filter { resolution(for: $0) != nil && automaticVerdict($0).map { $0 != .verified } == true }.count
     }
     var needsReviewCount: Int {
         effectiveVerdicts.filter { if case .needsReview = $0 { return true }; return false }.count
@@ -199,8 +215,37 @@ final class AppModel: ObservableObject {
 
     /// The verdict as shown: a resolved reference counts as verified.
     func effectiveVerdict(_ reference: ParsedReference) -> Verdict? {
-        guard let verdict = results[reference.id]?.verdict else { return nil }
+        guard let verdict = automaticVerdict(reference) else { return nil }
         return resolution(for: reference) != nil ? .verified : verdict
+    }
+
+    /// The checker's verdict, with a reference that is never cited in the text counted as an issue.
+    func automaticVerdict(_ reference: ParsedReference) -> Verdict? {
+        guard let verdict = results[reference.id]?.verdict else { return nil }
+        return citations?.adjusted(verdict, for: reference.id) ?? verdict
+    }
+
+    func isUncited(_ reference: ParsedReference) -> Bool {
+        citations.map { $0.count(for: reference.id) == 0 } ?? false
+    }
+
+    /// Empties everything loaded: paper, reference list, results and the browser pane.
+    /// Settings and the references you resolved stay.
+    func resetAll() {
+        cancel()
+        sourceName = nil
+        sectionText = ""
+        references = []
+        results = [:]
+        removedLines = []
+        bodyText = nil
+        extraction = nil
+        citations = nil
+        notice = nil
+        errorMessage = nil
+        browserReferenceID = nil
+        textController.query = ""
+        browser.clear()
     }
 
     func resolve(_ reference: ParsedReference, note: String) {
@@ -234,7 +279,8 @@ final class AppModel: ObservableObject {
         let resolved = Dictionary(uniqueKeysWithValues: references.compactMap { ref in
             resolution(for: ref).map { (ref.id, $0) }
         })
-        return HTMLReport.render(references: references, results: results, source: sourceName, resolutions: resolved)
+        return HTMLReport.render(references: references, results: results, source: sourceName, resolutions: resolved,
+                                 citations: citations)
     }
 
     func exportHTML() {

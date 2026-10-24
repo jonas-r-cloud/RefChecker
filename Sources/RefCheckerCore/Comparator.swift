@@ -8,7 +8,7 @@ import Foundation
 public enum Comparator {
     public static func compare(_ ref: ParsedReference, with meta: RetrievedMetadata,
                                options: ComparisonOptions = ComparisonOptions()) -> (fields: [FieldComparison], highlights: [Highlight]) {
-        let text = NormalizedText(ref.raw)
+        let text = matchingText(ref.raw)
         var fields: [FieldComparison] = []
         var highlights: [Highlight] = []
 
@@ -105,6 +105,14 @@ public enum Comparator {
         let label = meta.isBook && meta.venue == nil ? "Publisher" : "Venue"
         let venues = ([label == "Publisher" ? meta.publisher : meta.venue] + meta.venueAliases)
             .compactMap { $0?.nilIfEmpty }
+        // Short forms: official abbreviations (Crossref, ISSN register, NLM), then the ISO 4
+        // abbreviation generated from the full name by the LTWA rules.
+        var shortForms = label == "Venue" ? meta.venueAbbreviations : []
+        if label == "Venue", let name = meta.venue {
+            for iso in ISO4.variants(name) where !shortForms.contains(where: { NormalizedText.key($0.name) == NormalizedText.key(iso) }) {
+                shortForms.append(VenueAbbreviation(iso, .iso4))
+            }
+        }
         if venues.isEmpty {
             fields.append(FieldComparison(field: label, original: ref.venue, retrieved: nil, status: .unavailable))
         } else if let hit = venues.lazy.compactMap({ v in
@@ -114,15 +122,28 @@ public enum Comparator {
             highlights.append(Highlight(hit.range, .match, field: label))
             fields.append(FieldComparison(field: label, original: text.text(hit.range), retrieved: hit.venue, status: .match,
                                           isLiteral: isLiteral(text.text(hit.range), hit.venue)))
+        } else if let hit = shortForms.lazy.compactMap({ a in findAbbreviation(a.name, in: text).map { (form: a, range: $0) } }).first {
+            // An official abbreviation is as good as the full name; the generated one is only a guess.
+            let status: MatchStatus = hit.form.source.isOfficial ? .match : .unconfirmed
+            highlights.append(Highlight(hit.range, status, field: label))
+            var note = "Abbreviated journal name “\(hit.form.name)” (\(hit.form.source.rawValue))"
+            if !hit.form.source.isOfficial { note += " – no official abbreviation list confirms it; check manually" }
+            fields.append(FieldComparison(field: label, original: text.text(hit.range), retrieved: venues[0],
+                                          status: status, note: note))
         } else {
             var original = ref.venue
             if let w = text.bestWindow(for: venues[0], minimumScore: 0.5) {
                 original = text.text(w.range)
                 highlights.append(Highlight(w.range, .mismatch, field: label))
             }
-            let aliases = venues.count > 1 ? "Also known as: " + venues.dropFirst().joined(separator: "; ") : nil
+            var notes: [String] = []
+            if venues.count > 1 { notes.append("Also known as: " + venues.dropFirst().joined(separator: "; ")) }
+            if !shortForms.isEmpty {
+                notes.append("Abbreviations tried: " + shortForms.map { "“\($0.name)” (\($0.source.rawValue))" }.joined(separator: "; "))
+            }
             fields.append(FieldComparison(field: label, original: original, retrieved: venues[0],
-                                          status: original == nil ? .missing : .mismatch, note: aliases))
+                                          status: original == nil ? .missing : .mismatch,
+                                          note: notes.isEmpty ? nil : notes.joined(separator: ". ")))
         }
 
         // Volume, issue, pages: the numbers must appear in a recognisable place
@@ -153,7 +174,8 @@ public enum Comparator {
                 fields.append(numberField("Issue", issue, placed: placed.map { range($0, $0) },
                                           loose: issueIdx.first.map { range($0, $0) }, what: "issue", &highlights))
             }
-            if let article = meta.articleNumber?.nilIfEmpty {
+            // Like a missing DOI, a missing article number can be accepted via the settings.
+            if let article = meta.articleNumber?.nilIfEmpty, options.requireArticleNumber || !articleIdx.isEmpty {
                 // "Article 122886", "243, 122886", "35(3), 100582", "Art. No. 7".
                 let placed = articleIdx.first { i in
                     articleMarkers.contains(key(i - 1)) || volumeIdx.contains(i - 1) || issueIdx.contains(i - 1)
@@ -230,6 +252,55 @@ public enum Comparator {
     static func isLiteral(_ a: String, _ b: String) -> Bool {
         let collapse = { (s: String) in s.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
         return collapse(a) == collapse(b)
+    }
+
+    private static let linkRx = NSRegularExpression(
+        "(?:https?://|www\\.)\\S+|\\bdoi:\\s*\\S+|\\b10\\.\\d{4,9}/\\S+", options: [.caseInsensitive])
+    /// A piece of a DOI/URL that a line break split off ("…/10.5465/ amr.2011.0396").
+    private static let linkTailRx = NSRegularExpression("^\\s[A-Za-z0-9._\\-/()]*[./][A-Za-z0-9._\\-/()]*\\d[A-Za-z0-9._\\-/()]*")
+
+    /// The reference text used for matching fields: DOIs and URLs are blanked out (same length, so
+    /// highlights still line up), because "amr" in "10.5465/amr.2011.0396" or "icis2020" in an AISeL
+    /// link is not the reference naming its venue. The DOI field is checked separately.
+    public static func matchingText(_ raw: String) -> NormalizedText {
+        var chars = Array(raw)
+        for m in linkRx.allMatches(in: raw) {
+            guard let r = Range(m.range, in: raw) else { continue }
+            var span = raw.characterOffsets(of: r)
+            let rest = String(raw[r.upperBound...])
+            if let tail = linkTailRx.firstMatch(in: rest), let t = Range(tail.range, in: rest) {
+                span = span.lowerBound..<(span.upperBound + rest.distance(from: rest.startIndex, to: t.upperBound))
+            }
+            for i in span where i < chars.count { chars[i] = " " }
+        }
+        return NormalizedText(String(chars))
+    }
+
+    /// Abbreviation parts used to recognise a longer abbreviation around a match.
+    private static let abbreviationParts: Set<String> = Set(ISO4.ltwa.map { NormalizedText.key($0.abbreviation) })
+    /// What may follow a journal name in a reference.
+    private static let venueFollowers: Set<String> = [
+        "vol", "volume", "vols", "v", "no", "nr", "n", "issue", "iss", "pp", "p", "s", "art", "article", "e",
+        "doi", "https", "http", "www", "in", "bd", "jg", "heft", "online", "advance", "press", "forthcoming",
+        "accepted", "retrieved", "available", "special", "suppl", "supplement"
+    ]
+
+    /// Finds a journal abbreviation as whole words that are not part of a longer abbreviation:
+    /// "Inf. Syst." (Information Systems) must not match "Inf. Syst. Res." (Information Systems Research)
+    /// nor "Eur. J. Inf. Syst." when looking for "J. Inf. Syst.".
+    static func findAbbreviation(_ abbreviation: String, in text: NormalizedText) -> Range<Int>? {
+        guard NormalizedText.key(abbreviation).count >= 3, let r = text.findWords(abbreviation) else { return nil }
+        if let next = text.tokens.first(where: { $0.range.lowerBound >= r.upperBound }),
+           !next.key.allSatisfy(\.isNumber), !venueFollowers.contains(next.key) {
+            return nil
+        }
+        if let previous = text.tokens.last(where: { $0.range.upperBound <= r.lowerBound }),
+           abbreviationParts.contains(previous.key),
+           text.characters.indices.contains(previous.range.upperBound),
+           text.characters[previous.range.upperBound] == "." {
+            return nil
+        }
+        return r
     }
 
     static func removeOverlaps(_ highlights: [Highlight]) -> [Highlight] {

@@ -26,7 +26,10 @@ final class BrowserModel: NSObject, ObservableObject, WKUIDelegate {
         webView.uiDelegate = self
         observations = [
             webView.observe(\.url) { [weak self] wv, _ in
-                Task { @MainActor in self?.urlString = wv.url?.absoluteString ?? "" }
+                Task { @MainActor in
+                    let url = wv.url?.absoluteString ?? ""
+                    self?.urlString = url == "about:blank" ? "" : url
+                }
             },
             webView.observe(\.title) { [weak self] wv, _ in
                 Task { @MainActor in self?.title = wv.title ?? "" }
@@ -70,6 +73,14 @@ final class BrowserModel: NSObject, ObservableObject, WKUIDelegate {
         var c = URLComponents(string: "https://scholar.google.com/scholar")!
         c.queryItems = [URLQueryItem(name: "q", value: String(query.prefix(300)))]
         return c.url!
+    }
+
+    /// Empties the pane (used by Reset All).
+    func clear() {
+        webView.stopLoading()
+        webView.loadHTMLString("", baseURL: nil)
+        urlString = ""
+        title = ""
     }
 
     func openInDefaultBrowser() {

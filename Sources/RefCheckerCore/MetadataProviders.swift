@@ -98,7 +98,9 @@ enum CSLParser {
             .compactMap { $0 }
         alternatives = Array(Set(alternatives)).filter { $0 != issued }.sorted()
         let containers = strings(item["container-title"])
+        // Short titles are abbreviations, compared as such (see Comparator).
         let short = strings(item["short-container-title"]) + strings(item["container-title-short"])
+        let shortForms = short.filter { s in !containers.contains { NormalizedText.key($0) == NormalizedText.key(s) } }
         var doi = string(item["DOI"])
         if doi == nil, let u = string(item["URL"]), let r = u.range(of: "doi.org/") { doi = String(u[r.upperBound...]) }
         var record = RetrievedMetadata(
@@ -109,7 +111,7 @@ enum CSLParser {
             year: issued ?? alternatives.first,
             alternativeYears: alternatives,
             venue: containers.first,
-            venueAliases: Array(containers.dropFirst()) + short + strings(item["event"].flatMap { ($0 as? [String: Any])?["name"] }),
+            venueAliases: Array(containers.dropFirst()) + strings(item["event"].flatMap { ($0 as? [String: Any])?["name"] }),
             volume: string(item["volume"]),
             issue: string(item["issue"]),
             pages: string(item["page"]) ?? string(item["article-number"]),
@@ -119,6 +121,8 @@ enum CSLParser {
             url: string(item["URL"]),
             links: strings(item["URL"]) + ((item["link"] as? [[String: Any]]) ?? []).compactMap { $0["URL"] as? String })
         record.ignoredAuthors = ignoredAuthors
+        record.venueAbbreviations = shortForms.map { VenueAbbreviation($0, .crossref) }
+        record.issn = strings(item["ISSN"])
         (record.pages, record.articleNumber) = ArticleNumbers.split(pages: string(item["page"]),
                                                                    articleNumber: string(item["article-number"]))
         return record
@@ -214,6 +218,17 @@ public struct OpenAlexProvider: MetadataProvider {
     let http: HTTPClient
     let mailto: String?
 
+    /// The ISSN register's abbreviated key title of a journal (e.g. "Acad. Manage. Rev.").
+    public func journalAbbreviations(issn: [String]) async -> [String] {
+        for number in issn {
+            let url = HTTPClient.url("https://api.openalex.org/sources/issn:\(number)", [("mailto", mailto)])
+            guard let json = (try? await http.json(url)) as? [String: Any] else { continue }
+            let abbreviations = CSLParser.strings(json["abbreviated_title"])
+            if !abbreviations.isEmpty { return abbreviations }
+        }
+        return []
+    }
+
     public func search(_ reference: ParsedReference) async throws -> [RetrievedMetadata] {
         let query = reference.title ?? reference.raw
         let url = HTTPClient.url("https://api.openalex.org/works", [
@@ -244,7 +259,7 @@ public struct OpenAlexProvider: MetadataProvider {
                 provider: name, title: title, authors: authors,
                 year: CSLParser.string(w["publication_year"]),
                 venue: CSLParser.string(source?["display_name"]),
-                venueAliases: CSLParser.strings(source?["abbreviated_title"]),
+                venueAliases: [],
                 volume: CSLParser.string(biblio["volume"]), issue: CSLParser.string(biblio["issue"]),
                 pages: pages, doi: doi,
                 publisher: CSLParser.string(source?["host_organization_name"]),
@@ -252,6 +267,9 @@ public struct OpenAlexProvider: MetadataProvider {
                 links: (((w["locations"] as? [[String: Any]]) ?? []) + [w["primary_location"] as? [String: Any] ?? [:]])
                     .compactMap { $0["landing_page_url"] as? String })
             record.ignoredAuthors = ignoredAuthors
+            // OpenAlex takes this from the ISSN register (abbreviated key title).
+            record.venueAbbreviations = CSLParser.strings(source?["abbreviated_title"]).map { VenueAbbreviation($0, .issn) }
+            record.issn = CSLParser.strings(source?["issn"]) + CSLParser.strings(source?["issn_l"])
             (record.pages, record.articleNumber) = ArticleNumbers.split(pages: pages, articleNumber: nil)
             return record
         }

@@ -42,8 +42,9 @@ public struct AISeLProvider: Sendable {
     private static let slugRx = NSRegularExpression("^([a-z_]+?)[-_]?(\\d{4})")
     private static let aiselURLRx = NSRegularExpression("https?://aisel\\.aisnet\\.org/[^\\s\"'<>]+", options: [.caseInsensitive])
     private static let mentionRx = NSRegularExpression(
-        "\\b(ICIS|ECIS|AMCIS|PACIS|ACIS|MCIS|UKAIS|AISeL|Wirtschaftsinformatik)\\b|AIS Electronic Library|aisel\\.aisnet\\.org|Conference on Information Systems",
-        options: [])
+        "\\b(ICIS|ECIS|AMCIS|PACIS|ACIS|MCIS|UKAIS|WHICEB|ICEB|CONF-IRM|AISeL|Wirtschaftsinformatik|Bled eConference)\\b|" +
+        "AIS Electronic Library|aisel\\.aisnet\\.org|Conferences? on Information Systems|Information Systems Conference",
+        options: [.caseInsensitive])
     private static let aisVenueRx = NSRegularExpression(
         "association for information systems|ais electronic library|aisel|communications of the ais|journal of the ais",
         options: [.caseInsensitive])
@@ -92,16 +93,48 @@ public struct AISeLProvider: Sendable {
         return Self.parseRecord(html: html, url: urlString)
     }
 
-    /// Searches the AISeL site for the parsed title and reads the top hits.
-    public func search(_ ref: ParsedReference) async throws -> [RetrievedMetadata] {
-        guard let title = ref.title, title.count >= 10 else { return [] }
-        let url = HTTPClient.url("https://\(Self.host)/do/search/", [("q", "title:\"\(title)\""), ("start", "0")])
-        guard let html = try await http.text(url) else { return [] }
-        var found: [RetrievedMetadata] = []
-        for link in Self.paperLinks(inSearchPage: html).prefix(3) {
-            if let m = try await record(at: link) { found.append(m) }
+    /// The words to search for: the parsed title, else the longest sentence of the reference.
+    static func query(for ref: ParsedReference) -> String? {
+        if let title = ref.title, title.count >= 10 { return title }
+        return ReferenceParser.segments(ref.raw)
+            .filter { $0.split(separator: " ").count >= 4 && !mentionsAISVenueText($0) }
+            .max { $0.count < $1.count }
+    }
+
+    private static func mentionsAISVenueText(_ s: String) -> Bool { mentionRx.firstMatch(in: s) != nil }
+
+    /// Searches for the paper's AISeL page: the AISeL site search (title phrase, then plain words),
+    /// then a web search restricted to aisel.aisnet.org. Reads the top hits' landing pages.
+    /// Returns the records and a description of every route tried, for the card's notes.
+    public func search(_ ref: ParsedReference) async throws -> (records: [RetrievedMetadata], routes: [String]) {
+        guard let q = Self.query(for: ref) else { return ([], ["no title to search for"]) }
+        var routes: [String] = []
+        var links: [String] = []
+        let attempts: [(String, URL)] = [
+            ("AISeL site search (title)", HTTPClient.url("https://\(Self.host)/do/search/", [("q", "title:\"\(q)\""), ("start", "0")])),
+            ("AISeL site search (words)", HTTPClient.url("https://\(Self.host)/do/search/", [("q", q), ("start", "0")])),
+            ("web search on aisel.aisnet.org", HTTPClient.url("https://html.duckduckgo.com/html/", [("q", "site:\(Self.host) \"\(q)\"")]))
+        ]
+        for (name, url) in attempts {
+            let html = (try? await http.text(url)) ?? nil
+            let found = html.map { Self.paperLinks(inSearchPage: Self.decodeRedirects($0)) } ?? []
+            routes.append("\(name): " + (html == nil ? "not reachable" : "\(found.count) hit(s)"))
+            links += found.filter { !links.contains($0) }
+            if !found.isEmpty { break }
         }
-        return found
+        var records: [RetrievedMetadata] = []
+        for link in links.prefix(3) {
+            if let m = try await record(at: link) { records.append(m) }
+        }
+        return (records, routes)
+    }
+
+    private static let redirectRx = NSRegularExpression("uddg=([^&\"'>]+)")
+
+    /// Search engines wrap result links ("/l/?uddg=https%3A%2F%2Faisel…"); unwrap them.
+    static func decodeRedirects(_ html: String) -> String {
+        let decoded = redirectRx.allMatches(in: html).compactMap { html.substring(with: $0.range(at: 1))?.removingPercentEncoding }
+        return html + "\n" + decoded.joined(separator: "\n")
     }
 
     static func paperLinks(inSearchPage html: String) -> [String] {

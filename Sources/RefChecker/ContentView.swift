@@ -14,12 +14,15 @@ extension MatchStatus {
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
+    @AppStorage(SettingsKey.reportFontSize) private var reportFontSize = TextSize.reportDefault
+    @State private var confirmReset = false
 
     var body: some View {
         HSplitView {
             InputPane()
                 .frame(minWidth: 280, idealWidth: 360, maxWidth: 600)
             ReportView()
+                .environment(\.reportFontScale, CGFloat(reportFontSize / TextSize.reportDefault))
                 .frame(minWidth: model.showBrowser ? 520 : 640, maxWidth: .infinity, maxHeight: .infinity)
             if model.showBrowser {
                 BrowserPane(browser: model.browser)
@@ -52,9 +55,21 @@ struct ContentView: View {
 
                 Toggle(isOn: $model.showBrowser) { Label("Browser", systemImage: "sidebar.right") }
                     .help("Show or hide the browser pane (⇧⌘B)")
+
+                Button(role: .destructive) { confirmReset = true } label: {
+                    Label("Reset All", systemImage: "trash")
+                }
+                .disabled(model.references.isEmpty && model.sectionText.isEmpty && model.sourceName == nil)
+                .help("Remove the paper, all references and all results")
             }
         }
         .navigationTitle(model.sourceName ?? "RefChecker")
+        .confirmationDialog("Reset all?", isPresented: $confirmReset) {
+            Button("Reset All", role: .destructive) { model.resetAll() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The paper, the reference list and all check results are removed. Settings and the references you marked as resolved are kept.")
+        }
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first else { return false }
             model.open(url)
@@ -71,6 +86,7 @@ struct ContentView: View {
 
 struct InputPane: View {
     @EnvironmentObject private var model: AppModel
+    @AppStorage(SettingsKey.referenceListFontSize) private var fontSize = TextSize.referenceListDefault
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -100,18 +116,38 @@ struct InputPane: View {
                 .font(.caption)
             }
             SectionSearchBar(controller: model.textController)
-            SectionTextView(text: $model.sectionText, controller: model.textController)
+            SectionTextView(text: $model.sectionText, controller: model.textController, fontSize: fontSize)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
             HStack {
-                Button("Split into References: Extracted Text ⇒ Structured Data") { model.parseSection() }
+                Button("Split into References") { model.parseSection() }
                     .disabled(model.sectionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Spacer()
-                Text("\(model.references.count) references")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let problems = extractionProblems {
+                    Label("\(model.references.count) references – check the split", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .help(problems)
+                } else {
+                    Text("\(model.references.count) references")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(12)
+    }
+}
+
+extension InputPane {
+    /// Only shown when the split looks incomplete: leftover text, numbering gaps, suspicious entries.
+    var extractionProblems: String? {
+        guard let x = model.extraction, !x.isComplete || !x.suspicious.isEmpty else { return nil }
+        var lines: [String] = []
+        if !x.leftovers.isEmpty { lines.append("Text belonging to no reference: " + x.leftovers.map { "“\($0)”" }.joined(separator: "; ")) }
+        if let n = x.numbering, !n.missing.isEmpty { lines.append("Missing numbers: " + n.missing.map { "[\($0)]" }.joined(separator: ", ")) }
+        if let n = x.numbering, !n.duplicates.isEmpty { lines.append("Numbers used twice: " + n.duplicates.map { "[\($0)]" }.joined(separator: ", ")) }
+        lines += x.suspicious.map { "[\($0.label)] \($0.reason)" }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -125,6 +161,7 @@ struct ReportView: View {
     }
 
     @EnvironmentObject private var model: AppModel
+    @Environment(\.reportFontScale) private var scale
     @State private var filter: Filter = .all
 
     var body: some View {
@@ -134,7 +171,7 @@ struct ReportView: View {
                     .font(.system(size: 48))
                     .foregroundStyle(.secondary)
                 Text("Open a paper to check its references")
-                    .font(.title3)
+                    .font(.rf(.title3, scale))
                 Text("Drop a PDF here, use File › Open Paper… (⌘O), or paste a reference list on the left.")
                     .foregroundStyle(.secondary)
                 Button("Open Paper…") { model.showOpenPanel() }
@@ -180,6 +217,7 @@ struct ReportView: View {
 }
 
 struct SummaryBar: View {
+    @Environment(\.reportFontScale) private var scale
     @EnvironmentObject private var model: AppModel
     @Binding var filter: ReportView.Filter
 
@@ -194,7 +232,7 @@ struct SummaryBar: View {
                 ProgressView(value: Double(model.results.count), total: Double(max(model.references.count, 1)))
                     .frame(width: 120)
                 Text("\(model.results.count)/\(model.references.count)")
-                    .font(.caption.monospacedDigit())
+                    .font(.rf(.caption, scale, monospacedDigits: true))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -223,6 +261,7 @@ struct SummaryBar: View {
 
 /// Explains the colours, so users know exactly what "green" promises.
 struct Legend: View {
+    @Environment(\.reportFontScale) private var scale
     @State private var showRules = false
 
     var body: some View {
@@ -234,7 +273,7 @@ struct Legend: View {
             Spacer()
             Button("What does green guarantee?") { showRules.toggle() }
                 .buttonStyle(.link)
-                .font(.caption)
+                .font(.rf(.caption, scale))
                 .popover(isPresented: $showRules, arrowEdge: .bottom) { RulesView().frame(width: 460) }
         }
         .padding(.horizontal, 12)
@@ -244,17 +283,18 @@ struct Legend: View {
     private func item(_ status: MatchStatus, _ title: String, _ detail: String) -> some View {
         HStack(spacing: 4) {
             RoundedRectangle(cornerRadius: 2).fill(status.color).frame(width: 12, height: 12)
-            Text(title).font(.caption.weight(.semibold))
-            if !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            Text(title).font(.rf(.caption, scale, .semibold))
+            if !detail.isEmpty { Text(detail).font(.rf(.caption, scale)).foregroundStyle(.secondary) }
         }
     }
 }
 
 struct RulesView: View {
+    @Environment(\.reportFontScale) private var scale
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                Text("A field is green only if all three hold:").font(.headline)
+                Text("A field is green only if all three hold:").font(.rf(.headline, scale))
                 rule("1", "The right work was found",
                      "Certain: the DOI or AISeL link printed in the reference leads to the record. High confidence: title, every author and the year agree. Otherwise every field stays amber at best, because the record may be a different work (e.g. the journal version of a conference paper).")
                 rule("2", "The value is backed by a trustworthy source",
@@ -263,9 +303,9 @@ struct RulesView: View {
                      "Compared character by character, ignoring only capitalisation, accents, punctuation and line breaks (the evidence column says when that was needed). Volume, issue and pages must appear in a recognisable place such as “vol. 12”, “12(3)” or “45–67”.")
                 Divider()
                 Text("Every field lists its evidence: which sources were asked and what each one says. Use “Open record” on a card to look at the source yourself.")
-                    .font(.callout)
+                    .font(.rf(.callout, scale))
                 Text("Green cannot catch errors that the publisher's own metadata contains, nor tell you whether citing the work is appropriate.")
-                    .font(.callout)
+                    .font(.rf(.callout, scale))
                     .foregroundStyle(.secondary)
             }
             .padding(16)
@@ -275,23 +315,24 @@ struct RulesView: View {
 
     private func rule(_ n: String, _ title: String, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Text(n).font(.headline).frame(width: 18, height: 18).background(Circle().fill(MatchStatus.match.color))
+            Text(n).font(.rf(.headline, scale)).frame(width: 18, height: 18).background(Circle().fill(MatchStatus.match.color))
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.weight(.semibold))
-                Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
+                Text(title).font(.rf(.subheadline, scale, .semibold))
+                Text(text).font(.rf(.callout, scale)).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 }
 
 struct Pill: View {
+    @Environment(\.reportFontScale) private var scale
     let text: String
     let color: Color
     var isSelected = false
 
     var body: some View {
         Text(text)
-            .font(.caption.weight(isSelected ? .bold : .medium))
+            .font(.rf(.caption, scale, isSelected ? .bold : .medium))
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(Capsule().fill(color))

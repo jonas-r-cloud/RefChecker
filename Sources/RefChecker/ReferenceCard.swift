@@ -4,16 +4,20 @@ import RefCheckerCore
 /// One reference: original text and retrieved metadata side by side, how the record
 /// was identified, and the field-by-field comparison with its evidence.
 struct ReferenceCard: View {
+    @Environment(\.reportFontScale) private var scale
     @EnvironmentObject private var model: AppModel
     let reference: ParsedReference
     let result: ReferenceResult?
     let isChecking: Bool
     @State private var showResolveForm = false
+    @State private var showCitations = false
     @State private var noteDraft = ""
 
     private var resolution: Resolution? { model.resolution(for: reference) }
     /// Resolving makes sense only for checked references that are not verified anyway.
-    private var canResolve: Bool { result.map { $0.verdict != .verified } ?? false }
+    private var canResolve: Bool { verdict.map { $0 != .verified } ?? false }
+    /// The checker's verdict, counting "not cited in the text" as an issue.
+    private var verdict: Verdict? { model.automaticVerdict(reference) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -22,14 +26,17 @@ struct ReferenceCard: View {
             HStack(alignment: .top, spacing: 12) {
                 Panel("Original reference") {
                     Text(highlightedReference)
+                        .font(.rf(.body, scale))
                         .textSelection(.enabled)
                 }
                 Panel("Retrieved metadata" + (result?.metadata.map { " · \($0.provider) (\($0.authority.label))" } ?? "")) {
                     if let meta = result?.metadata {
                         Text(meta.formattedCitation)
+                            .font(.rf(.body, scale))
                             .textSelection(.enabled)
                     } else {
                         Text(placeholder)
+                            .font(.rf(.body, scale))
                             .italic()
                             .foregroundStyle(.secondary)
                     }
@@ -48,9 +55,17 @@ struct ReferenceCard: View {
                 FieldTable(fields: fields)
             }
 
+            if model.isUncited(reference) {
+                Label("Not cited in the text – counted as an issue. Remove the reference, add a citation, or resolve it if the citation is written in a form the app does not recognise.",
+                      systemImage: "quote.bubble")
+                    .font(.rf(.caption, scale))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             ForEach(result?.notes ?? [], id: \.self) { note in
                 Label(note, systemImage: "info.circle")
-                    .font(.caption)
+                    .font(.rf(.caption, scale))
                     .foregroundStyle(.orange)
             }
         }
@@ -65,15 +80,30 @@ struct ReferenceCard: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text("[\(reference.label)]")
-                .font(.headline.monospacedDigit())
-            VerdictBadge(verdict: result?.verdict, isChecking: isChecking, resolved: resolution != nil)
+                .font(.rf(.headline, scale, monospacedDigits: true))
+            VerdictBadge(verdict: verdict, isChecking: isChecking, resolved: resolution != nil)
+            if let citations = model.citations {
+                let snippets = citations.occurrences[reference.id] ?? []
+                Button { showCitations = true } label: {
+                    Label(snippets.isEmpty ? "Not cited in text" : "Cited \(snippets.count)×", systemImage: "quote.bubble")
+                }
+                .font(.rf(.caption, scale))
+                .foregroundStyle(snippets.isEmpty ? Color.red : Color.secondary)
+                .buttonStyle(.borderless)
+                .help(snippets.isEmpty ? "No citation of this reference was found in the paper's text"
+                                       : "Show where the paper cites this reference")
+                .popover(isPresented: $showCitations, arrowEdge: .bottom) {
+                    CitationList(reference: reference, snippets: snippets, style: citations.style)
+                        .environment(\.reportFontScale, scale)
+                }
+            }
             Spacer()
             if canResolve {
                 if resolution != nil {
                     Button { model.unresolve(reference) } label: {
                         Label("Reopen", systemImage: "arrow.uturn.backward.circle")
                     }
-                    .font(.caption)
+                    .font(.rf(.caption, scale))
                     .buttonStyle(.borderless)
                     .help("Undo “resolved” – the reference shows its automatic verdict again")
                 } else {
@@ -83,7 +113,7 @@ struct ReferenceCard: View {
                     } label: {
                         Label("Resolve", systemImage: "checkmark.circle")
                     }
-                    .font(.caption)
+                    .font(.rf(.caption, scale))
                     .buttonStyle(.borderless)
                     .help("Mark as resolved: counts as verified, the field colours stay as they are")
                     .popover(isPresented: $showResolveForm, arrowEdge: .bottom) { resolveForm }
@@ -101,14 +131,14 @@ struct ReferenceCard: View {
             } label: {
                 Label(result?.metadata != nil ? "Website" : "Search Scholar", systemImage: "globe")
             }
-            .font(.caption)
+            .font(.rf(.caption, scale))
             .buttonStyle(.borderless)
             .help(result?.metadata != nil
                   ? "Open the record's website in the browser pane: \(model.webURL(for: reference).absoluteString)"
                   : "Search Google Scholar for this reference in the browser pane")
             if let url = recordURL {
                 Link(destination: url) { Image(systemName: "arrow.up.right.square") }
-                    .font(.caption)
+                    .font(.rf(.caption, scale))
                     .help("Open in your default browser: \(url.absoluteString)")
             }
             Button {
@@ -124,9 +154,9 @@ struct ReferenceCard: View {
 
     private var resolveForm: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Mark [\(reference.label)] as resolved").font(.headline)
+            Text("Mark [\(reference.label)] as resolved").font(.rf(.headline, scale))
             Text("The reference will count as verified. The field colours and the evidence stay as the check found them, and the badge shows that you resolved it.")
-                .font(.caption)
+                .font(.rf(.caption, scale))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             TextField("Reason (optional), e.g. “venue abbreviation is fine”", text: $noteDraft, axis: .vertical)
@@ -164,7 +194,7 @@ struct ReferenceCard: View {
 
     private var borderColor: Color {
         if resolution != nil && canResolve { return .green.opacity(0.6) }
-        switch result?.verdict {
+        switch verdict {
         case .verified?: return .green.opacity(0.6)
         case .needsReview?: return .orange.opacity(0.7)
         case .issues?, .notFound?, .failed?: return .red.opacity(0.6)
@@ -187,6 +217,7 @@ struct ReferenceCard: View {
 /// "Identified with certainty: the DOI printed in the reference resolves to this record."
 /// plus which sources were asked and which found the work.
 struct IdentificationRow: View {
+    @Environment(\.reportFontScale) private var scale
     let result: ReferenceResult
 
     var body: some View {
@@ -195,17 +226,17 @@ struct IdentificationRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: icon(id.level))
                         .foregroundStyle(id.level == .probable ? Color.orange : Color.green)
-                    Text(id.title).font(.caption.weight(.semibold))
-                    Text(id.reason).font(.caption).foregroundStyle(.secondary)
+                    Text(id.title).font(.rf(.caption, scale, .semibold))
+                    Text(id.reason).font(.rf(.caption, scale)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             if !result.sources.isEmpty {
                 HStack(spacing: 10) {
-                    Text("Sources asked:").font(.caption).foregroundStyle(.secondary)
+                    Text("Sources asked:").font(.rf(.caption, scale)).foregroundStyle(.secondary)
                     ForEach(Array(result.sources.enumerated()), id: \.offset) { _, source in
                         Label(source.name, systemImage: source.found ? "checkmark.circle" : "minus.circle")
-                            .font(.caption)
+                            .font(.rf(.caption, scale))
                             .foregroundStyle(source.found ? Color.primary : Color.secondary)
                             .help(source.found ? "\(source.name) has this work" : "\(source.name) did not return this work")
                     }
@@ -224,6 +255,7 @@ struct IdentificationRow: View {
 }
 
 struct Panel<Content: View>: View {
+    @Environment(\.reportFontScale) private var scale
     let title: String
     let content: Content
 
@@ -235,7 +267,7 @@ struct Panel<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title.uppercased())
-                .font(.caption2.weight(.semibold))
+                .font(.rf(.caption2, scale, .semibold))
                 .foregroundStyle(.secondary)
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -248,6 +280,7 @@ struct Panel<Content: View>: View {
 
 /// "Resolved by you on 22 Oct 2026 – venue abbreviation is fine"
 struct ResolutionRow: View {
+    @Environment(\.reportFontScale) private var scale
     let resolution: Resolution
     let undo: () -> Void
 
@@ -255,19 +288,20 @@ struct ResolutionRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "person.crop.circle.badge.checkmark").foregroundStyle(Color.green)
             Text("Resolved by you on \(resolution.date.formatted(date: .abbreviated, time: .shortened))")
-                .font(.caption.weight(.semibold))
+                .font(.rf(.caption, scale, .semibold))
             if let note = resolution.note {
-                Text("– \(note)").font(.caption).foregroundStyle(.secondary)
+                Text("– \(note)").font(.rf(.caption, scale)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("The table below still shows the automatic result.").font(.caption).foregroundStyle(.secondary)
+            Text("The table below still shows the automatic result.").font(.rf(.caption, scale)).foregroundStyle(.secondary)
             Spacer()
-            Button("Undo", action: undo).font(.caption).buttonStyle(.link)
+            Button("Undo", action: undo).font(.rf(.caption, scale)).buttonStyle(.link)
         }
     }
 }
 
 struct VerdictBadge: View {
+    @Environment(\.reportFontScale) private var scale
     let verdict: Verdict?
     let isChecking: Bool
     var resolved = false
@@ -276,29 +310,29 @@ struct VerdictBadge: View {
         if isChecking {
             HStack(spacing: 4) {
                 ProgressView().controlSize(.small)
-                Text("Checking…").font(.caption)
+                Text("Checking…").font(.rf(.caption, scale))
             }
         } else if let verdict, resolved, verdict != .verified {
             HStack(spacing: 4) {
                 Label("Resolved", systemImage: "person.crop.circle.badge.checkmark")
-                    .font(.caption.weight(.semibold))
+                    .font(.rf(.caption, scale, .semibold))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
                     .background(Capsule().fill(MatchStatus.match.color))
                 Text("was: \(verdict.title)")
-                    .font(.caption)
+                    .font(.rf(.caption, scale))
                     .foregroundStyle(.secondary)
             }
             .help("Marked as resolved by you; counts as verified. The automatic verdict was “\(verdict.title)”.")
         } else if let verdict {
             Label(verdict.title, systemImage: style(verdict).icon)
-                .font(.caption.weight(.semibold))
+                .font(.rf(.caption, scale, .semibold))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 2)
                 .background(Capsule().fill(style(verdict).status.color))
         } else {
             Text("Not checked")
-                .font(.caption)
+                .font(.rf(.caption, scale))
                 .foregroundStyle(.secondary)
         }
     }
@@ -313,6 +347,7 @@ struct VerdictBadge: View {
 }
 
 struct FieldTable: View {
+    @Environment(\.reportFontScale) private var scale
     let fields: [FieldComparison]
 
     var body: some View {
@@ -326,7 +361,7 @@ struct FieldTable: View {
             ForEach(fields) { field in
                 GridRow {
                     Label(field.field, systemImage: icon(field.status))
-                        .font(.caption.weight(.semibold))
+                        .font(.rf(.caption, scale, .semibold))
                         .padding(4)
                         .frame(width: 80, alignment: .leading)
                         .help(field.status.title)
@@ -350,7 +385,7 @@ struct FieldTable: View {
 
     private func headerCell(_ title: String) -> some View {
         Text(title)
-            .font(.caption2.weight(.semibold))
+            .font(.rf(.caption2, scale, .semibold))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -358,7 +393,7 @@ struct FieldTable: View {
 
     private func valueCell(_ value: String?, _ status: MatchStatus) -> some View {
         Text(value ?? "—")
-            .font(.caption)
+            .font(.rf(.caption, scale))
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
             .padding(4)
@@ -369,16 +404,17 @@ struct FieldTable: View {
 
 /// Why a field has its colour, and what each source says.
 struct EvidenceCell: View {
+    @Environment(\.reportFontScale) private var scale
     let field: FieldComparison
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(field.explanation ?? field.note ?? field.status.title)
-                .font(.caption2)
+                .font(.rf(.caption2, scale))
                 .fixedSize(horizontal: false, vertical: true)
             if field.note != nil, field.explanation != nil, field.note != field.explanation {
                 Text(field.note!)
-                    .font(.caption2)
+                    .font(.rf(.caption2, scale))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -392,7 +428,7 @@ struct EvidenceCell: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
-                .font(.caption2)
+                .font(.rf(.caption2, scale))
                 .help("\(e.source) (\(e.authority.label)): \(e.value ?? "no value")")
             }
         }
