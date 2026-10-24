@@ -289,3 +289,7 @@ Tests/RefCheckerCoreTests/   unit tests
 Support/Info.plist           app bundle metadata
 build-app.sh                 builds build/RefChecker.app
 ```
+
+## Development
+
+`RefCheckerConversation.md` documents the conversation history of the development.
